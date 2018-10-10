@@ -628,8 +628,6 @@ bool D3D12CommandProcessor::SetupContext() {
     return false;
   }
 
-  pipeline_cache_ = std::make_unique<PipelineCache>(this, register_file_);
-
   texture_cache_ = std::make_unique<TextureCache>(this, register_file_,
                                                   shared_memory_.get());
   if (!texture_cache_->Initialize()) {
@@ -643,6 +641,9 @@ bool D3D12CommandProcessor::SetupContext() {
     XELOGE("Failed to initialize the render target cache");
     return false;
   }
+
+  pipeline_cache_ = std::make_unique<PipelineCache>(
+      this, register_file_, render_target_cache_->IsROVUsedForEDRAM());
 
   primitive_converter_ =
       std::make_unique<PrimitiveConverter>(this, register_file_, memory_);
@@ -810,11 +811,11 @@ void D3D12CommandProcessor::ShutdownContext() {
 
   primitive_converter_.reset();
 
+  pipeline_cache_.reset();
+
   render_target_cache_.reset();
 
   texture_cache_.reset();
-
-  pipeline_cache_.reset();
 
   // Root signatured are used by pipelines, thus freed after the pipelines.
   for (auto it : root_signatures_) {
@@ -1021,11 +1022,11 @@ void D3D12CommandProcessor::PerformSwap(uint32_t frontbuffer_ptr,
 
     primitive_converter_->ClearCache();
 
+    pipeline_cache_->ClearCache();
+
     render_target_cache_->ClearCache();
 
     texture_cache_->ClearCache();
-
-    pipeline_cache_->ClearCache();
 
     for (auto it : root_signatures_) {
       it.second->Release();
@@ -1198,7 +1199,9 @@ bool D3D12CommandProcessor::IssueDraw(PrimitiveType primitive_type,
     uint32_t vfetch_constant_index =
         XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + vfetch_index * 2;
     if ((regs[vfetch_constant_index].u32 & 0x3) != 3) {
-      XELOGGPU("Vertex fetch type is not 3!");
+      XELOGW("Vertex fetch type is not 3 (fetch constant %u is %.8X %.8X)!",
+             vfetch_index, regs[vfetch_constant_index].u32,
+             regs[vfetch_constant_index + 1].u32);
       return false;
     }
     shared_memory_->RequestRange(
