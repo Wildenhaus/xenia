@@ -1797,20 +1797,26 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
 
   // Color exponent bias and output index mapping or ROV writing.
   uint32_t rb_color_mask = regs[XE_GPU_REG_RB_COLOR_MASK].u32;
+  bool colorcontrol_blend_enable =
+      (regs[XE_GPU_REG_RB_COLORCONTROL].u32 & 0x20) == 0;
   for (uint32_t i = 0; i < 4; ++i) {
-    uint32_t color_info;
+    uint32_t color_info, blend_control;
     switch (i) {
       case 1:
         color_info = regs[XE_GPU_REG_RB_COLOR1_INFO].u32;
+        blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_1].u32;
         break;
       case 2:
         color_info = regs[XE_GPU_REG_RB_COLOR2_INFO].u32;
+        blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_2].u32;
         break;
       case 3:
         color_info = regs[XE_GPU_REG_RB_COLOR3_INFO].u32;
+        blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_3].u32;
         break;
       default:
         color_info = regs[XE_GPU_REG_RB_COLOR_INFO].u32;
+        blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_0].u32;
     }
     // Exponent bias is in bits 20:25 of RB_COLOR_INFO.
     int32_t color_exp_bias = int32_t(color_info << 6) >> 26;
@@ -1834,6 +1840,8 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     dirty |= system_constants_.color_exp_bias[i] != color_exp_bias_scale;
     system_constants_.color_exp_bias[i] = color_exp_bias_scale;
     if (render_target_cache_->IsROVUsedForEDRAM()) {
+      uint32_t rt_pair_index = i >> 1;
+      uint32_t rt_pair_comp = (i & 1) << 1;
       uint32_t edram_base_dwords = (color_info & 0xFFF) * 1280;
       dirty |= system_constants_.edram_base_dwords[i] != edram_base_dwords;
       system_constants_.edram_base_dwords[i] = edram_base_dwords;
@@ -1892,6 +1900,28 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
         if (rt_mask != rt_mask_all) {
           rt_flags |= DxbcShaderTranslator::kRTFlag_Load;
         }
+        uint32_t blend_x, blend_y;
+        if (colorcontrol_blend_enable &&
+            DxbcShaderTranslator::GetBlendConstants(blend_control, blend_x,
+                                                    blend_y)) {
+          rt_flags |= DxbcShaderTranslator::kRTFlag_Load |
+                      DxbcShaderTranslator::kRTFlag_Blend;
+          if (system_constants_
+                  .edram_blend_rt01_rt23[rt_pair_index][rt_pair_comp] !=
+              blend_x) {
+            dirty = true;
+            system_constants_
+                .edram_blend_rt01_rt23[rt_pair_index][rt_pair_comp] = blend_x;
+          }
+          if (system_constants_
+                  .edram_blend_rt01_rt23[rt_pair_index][rt_pair_comp + 1] !=
+              blend_y) {
+            dirty = true;
+            system_constants_
+                .edram_blend_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
+                blend_y;
+          }
+        }
       }
       dirty |= system_constants_.edram_rt_flags[i] != rt_flags;
       system_constants_.edram_rt_flags[i] = rt_flags;
@@ -1901,6 +1931,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
         // Initialize min/max to Infinity.
         uint32_t color_min = 0xFF800000u, alpha_min = 0xFF800000u;
         uint32_t color_max = 0x7F800000u, alpha_max = 0x7F800000u;
+        float color_load_scale = 1.0f, alpha_load_scale = 1.0f;
         float color_store_scale = 1.0f, alpha_store_scale = 1.0f;
         switch (color_format) {
           case ColorRenderTargetFormat::k_8_8_8_8:
@@ -1916,6 +1947,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
             color_mask = alpha_mask = 255;
             color_min = alpha_min = 0;
             color_max = alpha_max = 0x3F800000;
+            color_load_scale = alpha_load_scale = 1.0f / 255.0f;
             color_store_scale = alpha_store_scale = 255.0f;
             break;
           case ColorRenderTargetFormat::k_2_10_10_10:
@@ -1932,7 +1964,8 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
             alpha_mask = 3;
             color_min = alpha_min = 0;
             color_max = alpha_max = 0x3F800000;
-            // 1023.0.
+            color_load_scale = 1.0f / 1023.0f;
+            alpha_load_scale = 1.0f / 3.0f;
             color_store_scale = 1023.0f;
             alpha_store_scale = 3.0f;
             break;
@@ -1952,6 +1985,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
             // 31.875.
             color_max = 0x41FF0000;
             alpha_max = 0x3F800000;
+            alpha_load_scale = 1.0f / 3.0f;
             alpha_store_scale = 3.0f;
             break;
           case ColorRenderTargetFormat::k_16_16:
@@ -1970,6 +2004,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
             color_min = alpha_min = 0xC2000000u;
             // 32.0.
             color_max = alpha_max = 0x42000000u;
+            color_load_scale = alpha_load_scale = 32.0f / 32767.0f;
             color_store_scale = alpha_store_scale = 32767.0f / 32.0f;
             break;
           case ColorRenderTargetFormat::k_16_16_FLOAT:
@@ -2001,14 +2036,18 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
             assert_always();
             break;
         }
-        uint32_t rt_pair_index = i >> 1;
-        uint32_t rt_pair_comp = (i & 1) << 1;
         system_constants_
             .edram_load_mask_rt01_rt23[rt_pair_index][rt_pair_comp] =
             color_mask;
         system_constants_
             .edram_load_mask_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
             alpha_mask;
+        system_constants_
+            .edram_load_scale_rt01_rt23[rt_pair_index][rt_pair_comp] =
+            color_load_scale;
+        system_constants_
+            .edram_load_scale_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
+            alpha_load_scale;
         system_constants_
             .edram_store_min_rt01_rt23[rt_pair_index][rt_pair_comp] = color_min;
         system_constants_
@@ -2033,6 +2072,26 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
       system_constants_.color_output_map[i] =
           render_targets[i].guest_render_target;
     }
+  }
+
+  // Blend constant for ROV blending.
+  if (render_target_cache_->IsROVUsedForEDRAM()) {
+    dirty |= system_constants_.edram_blend_constant[0] !=
+             regs[XE_GPU_REG_RB_BLEND_RED].f32;
+    system_constants_.edram_blend_constant[0] =
+        regs[XE_GPU_REG_RB_BLEND_RED].f32;
+    dirty |= system_constants_.edram_blend_constant[1] !=
+             regs[XE_GPU_REG_RB_BLEND_GREEN].f32;
+    system_constants_.edram_blend_constant[1] =
+        regs[XE_GPU_REG_RB_BLEND_GREEN].f32;
+    dirty |= system_constants_.edram_blend_constant[2] !=
+             regs[XE_GPU_REG_RB_BLEND_BLUE].f32;
+    system_constants_.edram_blend_constant[2] =
+        regs[XE_GPU_REG_RB_BLEND_BLUE].f32;
+    dirty |= system_constants_.edram_blend_constant[3] !=
+             regs[XE_GPU_REG_RB_BLEND_ALPHA].f32;
+    system_constants_.edram_blend_constant[3] =
+        regs[XE_GPU_REG_RB_BLEND_ALPHA].f32;
   }
 
   cbuffer_bindings_system_.up_to_date &= !dirty;
