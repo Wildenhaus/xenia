@@ -9,8 +9,6 @@
 
 #include "xenia/gpu/d3d12/render_target_cache.h"
 
-#include <gflags/gflags.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -24,10 +22,6 @@
 #include "xenia/gpu/texture_info.h"
 #include "xenia/gpu/texture_util.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
-
-DEFINE_bool(d3d12_rov, false,
-            "Use rasterizer-ordered views for render target emulation where "
-            "available (experimental and currently largely unimplemented).");
 
 namespace xe {
 namespace gpu {
@@ -51,6 +45,9 @@ namespace d3d12 {
 #include "xenia/gpu/d3d12/shaders/dxbc/edram_tile_sample_64bpp_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/resolve_ps.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/resolve_vs.h"
+
+constexpr uint32_t RenderTargetCache::kHeap4MBPages;
+constexpr uint32_t RenderTargetCache::kRenderTargetDescriptorHeapSize;
 
 const RenderTargetCache::EDRAMLoadStoreModeInfo
     RenderTargetCache::edram_load_store_mode_info_[size_t(
@@ -79,13 +76,13 @@ RenderTargetCache::RenderTargetCache(D3D12CommandProcessor* command_processor,
 RenderTargetCache::~RenderTargetCache() { Shutdown(); }
 
 bool RenderTargetCache::Initialize() {
-  auto device =
-      command_processor_->GetD3D12Context()->GetD3D12Provider()->GetDevice();
+  auto provider = command_processor_->GetD3D12Context()->GetD3D12Provider();
+  auto device = provider->GetDevice();
 
   // Create the buffer for reinterpreting EDRAM contents.
   D3D12_RESOURCE_DESC edram_buffer_desc;
   ui::d3d12::util::FillBufferResourceDesc(
-      edram_buffer_desc, kEDRAMBufferSize,
+      edram_buffer_desc, GetEDRAMBufferSize(),
       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
   // The first operation will be a clear.
   edram_buffer_state_ = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -135,7 +132,7 @@ bool RenderTargetCache::Initialize() {
   load_store_root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
   edram_load_store_root_signature_ =
-      ui::d3d12::util::CreateRootSignature(device, load_store_root_desc);
+      ui::d3d12::util::CreateRootSignature(provider, load_store_root_desc);
   if (edram_load_store_root_signature_ == nullptr) {
     XELOGE("Failed to create the EDRAM load/store root signature");
     Shutdown();
@@ -145,7 +142,7 @@ bool RenderTargetCache::Initialize() {
   load_store_root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
   ++load_store_root_parameters[1].DescriptorTable.pDescriptorRanges;
   edram_clear_root_signature_ =
-      ui::d3d12::util::CreateRootSignature(device, load_store_root_desc);
+      ui::d3d12::util::CreateRootSignature(provider, load_store_root_desc);
   if (edram_clear_root_signature_ == nullptr) {
     XELOGE("Failed to create the EDRAM buffer clear root signature");
     Shutdown();
@@ -268,7 +265,7 @@ bool RenderTargetCache::Initialize() {
   resolve_root_desc.Flags =
       D3D12_ROOT_SIGNATURE_FLAG_DENY_VERTEX_SHADER_ROOT_ACCESS;
   resolve_root_signature_ =
-      ui::d3d12::util::CreateRootSignature(device, resolve_root_desc);
+      ui::d3d12::util::CreateRootSignature(provider, resolve_root_desc);
   if (resolve_root_signature_ == nullptr) {
     XELOGE("Failed to create the converting resolve root signature");
     Shutdown();
@@ -336,14 +333,6 @@ void RenderTargetCache::ClearCache() {
   }
 }
 
-bool RenderTargetCache::IsROVUsedForEDRAM() const {
-  if (!FLAGS_d3d12_rov) {
-    return false;
-  }
-  auto provider = command_processor_->GetD3D12Context()->GetD3D12Provider();
-  return provider->AreRasterizerOrderedViewsSupported();
-}
-
 void RenderTargetCache::BeginFrame() {
   ClearBindings();
 
@@ -352,7 +341,7 @@ void RenderTargetCache::BeginFrame() {
 }
 
 bool RenderTargetCache::UpdateRenderTargets(const D3D12Shader* pixel_shader) {
-  if (IsROVUsedForEDRAM()) {
+  if (command_processor_->IsROVUsedForEDRAM()) {
     return true;
   }
 
@@ -921,6 +910,11 @@ bool RenderTargetCache::Resolve(SharedMemory* shared_memory,
       msaa_samples != MsaaSamples::k1X ? "s" : "", surface_format,
       surface_edram_base);
 
+  if (command_processor_->IsROVUsedForEDRAM()) {
+    // Commit ROV writes.
+    command_processor_->PushUAVBarrier(edram_buffer_);
+  }
+
   bool result = ResolveCopy(shared_memory, texture_cache, surface_edram_base,
                             surface_pitch, msaa_samples, surface_is_depth,
                             surface_format, src_rect);
@@ -1103,7 +1097,7 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
       return false;
     }
     ui::d3d12::util::CreateRawBufferSRV(device, descriptor_cpu_start,
-                                        edram_buffer_, kEDRAMBufferSize);
+                                        edram_buffer_, GetEDRAMBufferSize());
     shared_memory->CreateRawUAV(
         provider->OffsetViewDescriptor(descriptor_cpu_start, 1));
 
@@ -1255,7 +1249,7 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
         0);
 
     ui::d3d12::util::CreateRawBufferSRV(device, descriptor_cpu_start,
-                                        edram_buffer_, kEDRAMBufferSize);
+                                        edram_buffer_, GetEDRAMBufferSize());
     ui::d3d12::util::CreateRawBufferUAV(
         device, provider->OffsetViewDescriptor(descriptor_cpu_start, 1),
         copy_buffer, render_target->copy_buffer_size);
@@ -1549,7 +1543,7 @@ bool RenderTargetCache::ResolveClear(uint32_t edram_base,
   command_list->SetComputeRoot32BitConstants(
       0, sizeof(root_constants) / sizeof(uint32_t), &root_constants, 0);
   ui::d3d12::util::CreateRawBufferUAV(device, descriptor_cpu_start,
-                                      edram_buffer_, kEDRAMBufferSize);
+                                      edram_buffer_, GetEDRAMBufferSize());
   command_list->SetComputeRootDescriptorTable(1, descriptor_gpu_start);
   // 1 group per 80x16 samples.
   command_list->Dispatch(row_width_ss_div_80, rows, 1);
@@ -1731,7 +1725,7 @@ void RenderTargetCache::CreateEDRAMUint32UAV(
   desc.Format = DXGI_FORMAT_R32_UINT;
   desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
   desc.Buffer.FirstElement = 0;
-  desc.Buffer.NumElements = kEDRAMBufferSize / sizeof(uint32_t);
+  desc.Buffer.NumElements = GetEDRAMBufferSize() / sizeof(uint32_t);
   desc.Buffer.StructureByteStride = 0;
   desc.Buffer.CounterOffsetInBytes = 0;
   desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
@@ -1781,6 +1775,17 @@ DXGI_FORMAT RenderTargetCache::GetColorDXGIFormat(
       break;
   }
   return DXGI_FORMAT_UNKNOWN;
+}
+
+uint32_t RenderTargetCache::GetEDRAMBufferSize() const {
+  uint32_t size = 2048 * 5120;
+  if (!command_processor_->IsROVUsedForEDRAM()) {
+    // Two 10 MB pages, one containing color and integer depth data, another
+    // with 32-bit float depth when 20e4 depth is used to allow for multipass
+    // drawing without precision loss in case of EDRAM store/load.
+    size *= 2;
+  }
+  return size;
 }
 
 void RenderTargetCache::TransitionEDRAMBuffer(D3D12_RESOURCE_STATES new_state) {
@@ -2121,7 +2126,7 @@ void RenderTargetCache::StoreRenderTargetsToEDRAM() {
                                       copy_buffer_size);
   ui::d3d12::util::CreateRawBufferUAV(
       device, provider->OffsetViewDescriptor(descriptor_cpu_start, 1),
-      edram_buffer_, kEDRAMBufferSize);
+      edram_buffer_, GetEDRAMBufferSize());
   command_list->SetComputeRootDescriptorTable(1, descriptor_gpu_start);
 
   // Sort the bindings in ascending order of EDRAM base so data in the render
@@ -2273,7 +2278,7 @@ void RenderTargetCache::LoadRenderTargetsFromEDRAM(
   auto device = provider->GetDevice();
   command_list->SetComputeRootSignature(edram_load_store_root_signature_);
   ui::d3d12::util::CreateRawBufferSRV(device, descriptor_cpu_start,
-                                      edram_buffer_, kEDRAMBufferSize);
+                                      edram_buffer_, GetEDRAMBufferSize());
   ui::d3d12::util::CreateRawBufferUAV(
       device, provider->OffsetViewDescriptor(descriptor_cpu_start, 1),
       copy_buffer, copy_buffer_size);

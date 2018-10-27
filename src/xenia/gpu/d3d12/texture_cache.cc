@@ -42,11 +42,14 @@ namespace d3d12 {
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_load_dxt3a_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_load_dxt5_rgba8_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_load_dxt5a_r8_cs.h"
+#include "xenia/gpu/d3d12/shaders/dxbc/texture_tile_128bpp_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_tile_16bpp_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_tile_16bpp_rgba_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_tile_32bpp_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_tile_64bpp_cs.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/texture_tile_8bpp_cs.h"
+
+constexpr uint32_t TextureCache::LoadConstants::kGuestPitchTiled;
 
 const TextureCache::HostFormat TextureCache::host_formats_[64] = {
     // k_1_REVERSE
@@ -218,7 +221,8 @@ const TextureCache::HostFormat TextureCache::host_formats_[64] = {
     // k_32_32_32_32_FLOAT
     {DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
      DXGI_FORMAT_R32G32B32A32_FLOAT, LoadMode::k128bpb, DXGI_FORMAT_UNKNOWN,
-     LoadMode::kUnknown, DXGI_FORMAT_UNKNOWN, ResolveTileMode::kUnknown},
+     LoadMode::kUnknown, DXGI_FORMAT_R32G32B32A32_FLOAT,
+     ResolveTileMode::k128bpp},
     // k_32_AS_8
     {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN,
      LoadMode::kUnknown, DXGI_FORMAT_UNKNOWN, LoadMode::kUnknown,
@@ -312,10 +316,11 @@ const TextureCache::HostFormat TextureCache::host_formats_[64] = {
     {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN,
      LoadMode::kUnknown, DXGI_FORMAT_UNKNOWN, LoadMode::kUnknown,
      DXGI_FORMAT_UNKNOWN, ResolveTileMode::kUnknown},
-    // k_8_8_8_8_GAMMA
-    {DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM,
-     DXGI_FORMAT_R8G8B8A8_SNORM, LoadMode::k32bpb, DXGI_FORMAT_UNKNOWN,
-     LoadMode::kUnknown, DXGI_FORMAT_R8G8B8A8_UNORM, ResolveTileMode::k32bpp},
+    // k_8_8_8_8_GAMMA_EDRAM
+    // Not usable as a texture.
+    {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN,
+     LoadMode::kUnknown, DXGI_FORMAT_UNKNOWN, LoadMode::kUnknown,
+     DXGI_FORMAT_UNKNOWN, ResolveTileMode::kUnknown},
     // k_2_10_10_10_FLOAT_EDRAM
     // Not usable as a texture.
     {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN,
@@ -353,6 +358,8 @@ const TextureCache::ResolveTileModeInfo
          DXGI_FORMAT_UNKNOWN, 0},
         {texture_tile_64bpp_cs, sizeof(texture_tile_64bpp_cs),
          DXGI_FORMAT_UNKNOWN, 0},
+        {texture_tile_128bpp_cs, sizeof(texture_tile_128bpp_cs),
+         DXGI_FORMAT_UNKNOWN, 0},
         {texture_tile_16bpp_rgba_cs, sizeof(texture_tile_16bpp_rgba_cs),
          DXGI_FORMAT_R16_UINT, 1},
 };
@@ -367,8 +374,8 @@ TextureCache::TextureCache(D3D12CommandProcessor* command_processor,
 TextureCache::~TextureCache() { Shutdown(); }
 
 bool TextureCache::Initialize() {
-  auto device =
-      command_processor_->GetD3D12Context()->GetD3D12Provider()->GetDevice();
+  auto provider = command_processor_->GetD3D12Context()->GetD3D12Provider();
+  auto device = provider->GetDevice();
 
   // Create the loading root signature.
   D3D12_ROOT_PARAMETER root_parameters[2];
@@ -400,7 +407,7 @@ bool TextureCache::Initialize() {
   root_signature_desc.pStaticSamplers = nullptr;
   root_signature_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
   load_root_signature_ =
-      ui::d3d12::util::CreateRootSignature(device, root_signature_desc);
+      ui::d3d12::util::CreateRootSignature(provider, root_signature_desc);
   if (load_root_signature_ == nullptr) {
     XELOGE("Failed to create the texture loading root signature");
     Shutdown();
@@ -414,7 +421,7 @@ bool TextureCache::Initialize() {
   root_parameters[0].Constants.Num32BitValues =
       sizeof(ResolveTileConstants) / sizeof(uint32_t);
   resolve_tile_root_signature_ =
-      ui::d3d12::util::CreateRootSignature(device, root_signature_desc);
+      ui::d3d12::util::CreateRootSignature(provider, root_signature_desc);
   if (resolve_tile_root_signature_ == nullptr) {
     XELOGE("Failed to create the texture tiling root signature");
     Shutdown();

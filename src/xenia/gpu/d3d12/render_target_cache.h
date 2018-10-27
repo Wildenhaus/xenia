@@ -240,11 +240,6 @@ class RenderTargetCache {
   void Shutdown();
   void ClearCache();
 
-  // Should a rasterizer-ordered UAV of the EDRAM buffer with format conversion
-  // and blending performed in pixel shaders be used instead of host render
-  // targets.
-  bool IsROVUsedForEDRAM() const;
-
   void BeginFrame();
   // Called in the beginning of a draw call - may bind pipelines.
   bool UpdateRenderTargets(const D3D12Shader* pixel_shader);
@@ -395,6 +390,8 @@ class RenderTargetCache {
     uint32_t copy_buffer_size;
   };
 
+  uint32_t GetEDRAMBufferSize() const;
+
   void TransitionEDRAMBuffer(D3D12_RESOURCE_STATES new_state);
 
   void ClearBindings();
@@ -465,10 +462,6 @@ class RenderTargetCache {
 
   // The EDRAM buffer allowing color and depth data to be reinterpreted.
   ID3D12Resource* edram_buffer_ = nullptr;
-  // Two 10 MB pages, one containing color and integer depth data, another with
-  // 32-bit float depth when 20e4 depth is used to allow for multipass drawing
-  // without precision loss in case of EDRAM store/load.
-  static constexpr uint32_t kEDRAMBufferSize = 2 * 2048 * 5120;
   D3D12_RESOURCE_STATES edram_buffer_state_;
   bool edram_buffer_cleared_;
 

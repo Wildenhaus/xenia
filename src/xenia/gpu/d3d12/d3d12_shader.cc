@@ -18,6 +18,11 @@ namespace xe {
 namespace gpu {
 namespace d3d12 {
 
+constexpr uint32_t D3D12Shader::kMaxTextureSRVIndexBits;
+constexpr uint32_t D3D12Shader::kMaxTextureSRVs;
+constexpr uint32_t D3D12Shader::kMaxSamplerBindingIndexBits;
+constexpr uint32_t D3D12Shader::kMaxSamplerBindings;
+
 D3D12Shader::D3D12Shader(ShaderType shader_type, uint64_t data_hash,
                          const uint32_t* dword_ptr, uint32_t dword_count)
     : Shader(shader_type, data_hash, dword_ptr, dword_count) {}
@@ -55,16 +60,16 @@ void D3D12Shader::SetTexturesAndSamplers(
   }
 }
 
-bool D3D12Shader::DisassembleDXBC() {
+bool D3D12Shader::DisassembleDXBC(const ui::d3d12::D3D12Provider* provider) {
   if (!host_disassembly_.empty()) {
     return true;
   }
   ID3DBlob* blob;
-  if (FAILED(D3DDisassemble(translated_binary().data(),
-                            translated_binary().size(),
-                            D3D_DISASM_ENABLE_INSTRUCTION_NUMBERING |
-                                D3D_DISASM_ENABLE_INSTRUCTION_OFFSET,
-                            nullptr, &blob))) {
+  if (FAILED(provider->Disassemble(translated_binary().data(),
+                                   translated_binary().size(),
+                                   D3D_DISASM_ENABLE_INSTRUCTION_NUMBERING |
+                                       D3D_DISASM_ENABLE_INSTRUCTION_OFFSET,
+                                   nullptr, &blob))) {
     return false;
   }
   host_disassembly_ = reinterpret_cast<const char*>(blob->GetBufferPointer());
