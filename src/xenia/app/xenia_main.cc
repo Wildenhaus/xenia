@@ -9,13 +9,14 @@
 
 #include <gflags/gflags.h>
 
-#include "xenia/base/debugging.h"
-#include "xenia/base/logging.h"
+//#include "xenia/app/game_library.h"
+//#include "xenia/app/game_scanner.h"
+//#include "xenia/base/debugging.h"
+//#include "xenia/base/logging.h"
 #include "xenia/base/main.h"
-#include "xenia/base/platform.h"
-#include "xenia/base/profiling.h"
-#include "xenia/base/threading.h"
-#include "xenia/vfs/devices/host_path_device.h"
+//#include "xenia/base/platform.h"
+//#include "xenia/base/profiling.h"
+//#include "xenia/base/threading.h"
 
 #include "xenia/app/emulator_window.h"
 
@@ -36,9 +37,26 @@ namespace xe {
 namespace app {
 
 int xenia_main(const std::vector<std::wstring>& args) {
-  Profiler::Initialize();
-  Profiler::ThreadEnter("main");
+  /*Profiler::Initialize();
+  Profiler::ThreadEnter("main");*/
 
+  //auto emulator = std::make_unique<xe::Emulator>(L"");
+
+  /*auto games = GameScanner::ScanPath("Z:\\X360 Games\\");
+  printf("%u games detected.\n", (uint)games.size());
+
+  auto lib = GameLibrary::Instance();
+
+  for(auto game : games) {
+    auto entry = GameScanner::ScanFile(game);
+    lib->AddEntry(entry);
+  }*/
+
+  //auto game = GameScanner::ScanFile("K:\\extract\\decrypt.xex");
+  //GameLibrary::Instance()->AddEntry(game);
+  //auto a = getchar();
+
+  // Start QT
   QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
   QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
 
@@ -46,12 +64,12 @@ int xenia_main(const std::vector<std::wstring>& args) {
   char* argv[] = {"xenia", nullptr};
   QApplication app(argc, argv);
   auto theme_manager = xe::ui::qt::ThemeManager::SharedManager();
-  QFontDatabase::addApplicationFont(":fonts/ionicons.ttf");
+  QFontDatabase::addApplicationFont(":/resources/fonts/ionicons.ttf");
 
   // EmulatorWindow main_wnd;
   ui::qt::MainWindow main_wnd;
-  main_wnd.setWindowIcon(QIcon(":/icon.ico"));
-  main_wnd.setFixedSize(1280, 720);
+  main_wnd.setWindowIcon(QIcon(":/resources/graphics/icon.ico"));
+  main_wnd.resize(1280, 720);
 
   /*
   if (FLAGS_mount_scratch) {
@@ -67,7 +85,7 @@ int xenia_main(const std::vector<std::wstring>& args) {
       }
     }
   }
-  
+  
   if (FLAGS_mount_cache) {
     auto cache0_device =
         std::make_unique<xe::vfs::HostPathDevice>("\\CACHE0", L"cache0", false);
@@ -126,8 +144,8 @@ int xenia_main(const std::vector<std::wstring>& args) {
 
   int rc = app.exec();
 
-  Profiler::Dump();
-  Profiler::Shutdown();
+  /*Profiler::Dump();
+  Profiler::Shutdown();*/
   return rc;
 }
 

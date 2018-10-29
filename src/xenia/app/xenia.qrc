@@ -1,11 +1,14 @@
 <RCC>
     <qresource prefix="/">
-        <file>icon.ico</file>
-        <file>fonts/ionicons.ttf</file>
-        <file>themes/base.css</file>
-        <file>themes/Xenia/theme.json</file>
-        <file>themes/Xenia/stylesheets/MainWidget.css</file>
-        <file>themes/Xenia/stylesheets/MainWindow.css</file>
-        <file>themes/Xenia/stylesheets/Sidebar.css</file>
+        <file>resources/graphics/icon.ico</file>
+        <file>resources/fonts/ionicons.ttf</file>
+        <file>resources/themes/base.css</file>
+        <file>resources/themes/Xenia/theme.json</file>
+        <file>resources/themes/Xenia/stylesheets/MainWindow.css</file>
+        <file>resources/graphics/icon64x64.png</file>
+        <file>resources/fonts/SegMDL2.ttf</file>
+        <file>resources/fonts/segoeui.ttf</file>
+        <file>resources/themes/Xenia/stylesheets/XNav.css</file>
+        <file>resources/themes/Xenia/stylesheets/XTab.css</file>
     </qresource>
 </RCC>

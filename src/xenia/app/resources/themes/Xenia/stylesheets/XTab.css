@@ -1,0 +1,9 @@
+QWidget#XTab {
+
+}
+
+QLabel#placeholder {
+    font: ":resources/fonts/segoeui.ttf";
+    color: $primary;
+    font-size: 48px;
+}

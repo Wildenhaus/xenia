@@ -6,6 +6,8 @@
 #include <QWidget>
 #include "theme_manager.h"
 
+#include <QtDebug>
+
 namespace xe {
 namespace ui {
 namespace qt {
@@ -13,12 +15,10 @@ namespace qt {
 template <typename T>
 class Themeable : public T {
  public:
-  Themeable(QString name = "", QWidget* parent = nullptr) : T(parent) {
+  Themeable(QString name, QWidget* parent = nullptr) : T(parent) {
     static_assert(std::is_base_of<QWidget, T>::value,
                   "T is not derived from QWidget");
-    if (name == QString::null) {
-      name = QString(typeid(T).name());
-    }
+
     ApplyTheme(name);
   }
 
@@ -32,7 +32,6 @@ class Themeable : public T {
 
     QString style = theme.StylesheetForComponent(theme_name);
     QString base_style = manager.base_style();
-
     if (style != QString::null) {
       setStyleSheet(base_style + style);
     }

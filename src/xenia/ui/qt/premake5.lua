@@ -26,4 +26,4 @@ project("xenia-ui-qt")
   includedirs({
     project_root.."/third_party/gflags/src",
   })
-  local_platform_files()
+  recursive_platform_files()

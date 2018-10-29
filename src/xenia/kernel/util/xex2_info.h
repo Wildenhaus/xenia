@@ -14,6 +14,16 @@
 
 #include "xenia/base/byte_order.h"
 
+const uint32_t XEX2_MAGIC = 0x58455832;  // "XEX2"
+
+static const uint8_t xe_xex2_retail_key[16] = {
+    0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3,
+    0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91};
+
+static const uint8_t xe_xex2_devkit_key[16] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+
 enum xe_xex2_header_keys : uint32_t {
   XEX_HEADER_RESOURCE_INFO = 0x000002FF,
   XEX_HEADER_FILE_FORMAT_INFO = 0x000003FF,
@@ -252,6 +262,11 @@ struct xe_xex2_resource_info_t {
   uint32_t size;
 };
 
+struct xe_xex2_multi_disc_media_id_t {
+  char hash[12];
+  uint32_t media_id;
+};
+
 struct xe_xex2_execution_info_t {
   uint32_t media_id;
   xe_xex2_version_t version;
@@ -437,20 +452,31 @@ struct xe_xex2_header_t {
   size_t import_library_count;
   xe_xex2_import_library_t import_libraries[32];
   uint32_t pe_export_table_offset;  // PE Export Directory
+  uint8_t* original_pe_name;
+  uint32_t original_base_address;
   size_t static_library_count;
   xe_xex2_static_library_t static_libraries[32];
   xe_xex2_file_format_info_t file_format_info;
   xe_xex2_loader_info_t loader_info;
   uint8_t session_key[16];
+  uint8_t lan_key[16];
 
   uint32_t exe_address;
   uint32_t exe_entry_point;
   uint32_t exe_stack_size;
   uint32_t exe_heap_size;
 
+  uint32_t default_filesystem_cache_size;
+  uint32_t default_heap_size;
+  uint32_t default_stack_size;
+
   size_t header_count;
   xe_xex2_opt_header_t headers[64];
 
+  size_t alt_title_id_count;
+  uint32_t* alt_title_ids;
+  size_t multi_disc_media_id_count;
+  xe_xex2_multi_disc_media_id_t* multi_disc_media_ids;
   size_t resource_info_count;
   xe_xex2_resource_info_t* resource_infos;
   size_t section_count;
