@@ -14,6 +14,13 @@
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/xbox.h"
 
+#include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
+#include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
+#include "xenia/vfs/devices/disc_image_device.h"
+#include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xthread.h"
+#include "xenia/kernel/user_module.h"
+
 namespace xe {
 namespace kernel {
 namespace xam {
@@ -309,6 +316,40 @@ dword_result_t XamContentOpenFile(dword_t r3, lpstring_t r4, lpstring_t r5,
   return X_ERROR_FILE_NOT_FOUND;
 }
 DECLARE_XAM_EXPORT(XamContentOpenFile, ExportTag::kStub);
+
+dword_result_t XamSwapDisc(dword_t disc_number,
+                           pointer_t<kernel::X_KEVENT> completion_handle,
+                           lpstring_t error_message) {
+  // error_message not correct type/ptr
+  // this code is absolute jank. don't use.
+  XELOGI("XamSwapDisc requests disc %d.", disc_number);
+  const std::string mount_path = "\\Device\\Cdrom0";
+  const std::wstring local_path = L"K:\\test\\LA Noire Disc 1.iso";
+  auto filesystem = kernel_state()->file_system();
+
+  // Unregister the existing device and mount the new one
+  filesystem->UnregisterDevice(mount_path); 
+  auto dev = std::make_unique<vfs::DiscImageDevice>(mount_path, local_path);
+  dev->Initialize();
+
+  // Register the new device to d: and game:
+  filesystem->RegisterDevice(std::move(dev));
+  filesystem->RegisterSymbolicLink("d:", mount_path);
+  filesystem->RegisterSymbolicLink("game:", mount_path);
+
+  // Resolve the pending disc swap event
+  auto kernel = kernel::xboxkrnl::KeSetEvent(completion_handle, 1, false);
+
+  // Release the completion handle
+  auto object = XObject::GetNativeObject<XObject>(
+      kernel_state(), kernel_memory()->virtual_membase() + (dword_t)completion_handle);
+  if (object) {
+    object->Release();
+  }
+
+  return 0;
+}
+DECLARE_XAM_EXPORT(XamSwapDisc, ExportTag::kSketchy);
 
 SHIM_CALL XamContentFlush_shim(PPCContext* ppc_context,
                                KernelState* kernel_state) {

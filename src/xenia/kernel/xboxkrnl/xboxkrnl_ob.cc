@@ -119,6 +119,11 @@ dword_result_t ObReferenceObjectByHandle(dword_t handle,
         native_ptr = object->guest_object();
         assert_not_zero(native_ptr);
       } break;
+      case 0xD00EBEEF: {  // Unknown Disc Swap Completion Handle
+        assert(object->type() == XObject::kTypeEvent);
+        native_ptr = object->guest_object();
+        assert_not_zero(native_ptr);
+      } break;
       default: {
         assert_unhandled_case(object_type_ptr);
         native_ptr = 0xDEADF00D;
