@@ -421,6 +421,7 @@ struct ParsedTextureFetchInstruction {
     bool use_computed_lod = true;
     bool use_register_lod = false;
     bool use_register_gradients = false;
+    float lod_bias = 0.0f;
     float offset_x = 0.0f;
     float offset_y = 0.0f;
     float offset_z = 0.0f;
@@ -522,6 +523,9 @@ class Shader {
     // Bitmap of all kConstantBool registers read by the shader.
     // Each bit corresponds to a storage index [0-255].
     uint32_t bool_bitmap[256 / 32];
+
+    // Total number of kConstantFloat registers read by the shader.
+    uint32_t float_count;
 
     // Computed byte count of all registers required when packed.
     uint32_t packed_byte_length;
