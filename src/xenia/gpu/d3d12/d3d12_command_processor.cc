@@ -32,10 +32,19 @@ DEFINE_bool(d3d12_half_pixel_offset, true,
 // Disabled because the current positions look worse than sampling at centers.
 DEFINE_bool(d3d12_programmable_sample_positions, false,
             "Enable custom SSAA sample positions where available");
+DEFINE_bool(d3d12_rov, false,
+            "Use rasterizer-ordered views for render target emulation where "
+            "available.");
 
 namespace xe {
 namespace gpu {
 namespace d3d12 {
+
+constexpr uint32_t
+    D3D12CommandProcessor::RootExtraParameterIndices::kUnavailable;
+constexpr uint32_t D3D12CommandProcessor::kSwapTextureWidth;
+constexpr uint32_t D3D12CommandProcessor::kSwapTextureHeight;
+constexpr uint32_t D3D12CommandProcessor::kScratchBufferSizeIncrement;
 
 D3D12CommandProcessor::D3D12CommandProcessor(
     D3D12GraphicsSystem* graphics_system, kernel::KernelState* kernel_state)
@@ -72,6 +81,14 @@ ID3D12GraphicsCommandList1* D3D12CommandProcessor::GetCurrentCommandList1()
     return nullptr;
   }
   return command_lists_[current_queue_frame_]->GetCommandList1();
+}
+
+bool D3D12CommandProcessor::IsROVUsedForEDRAM() const {
+  if (!FLAGS_d3d12_rov) {
+    return false;
+  }
+  auto provider = GetD3D12Context()->GetD3D12Provider();
+  return provider->AreRasterizerOrderedViewsSupported();
 }
 
 uint32_t D3D12CommandProcessor::GetCurrentColorMask(
@@ -272,7 +289,7 @@ ID3D12RootSignature* D3D12CommandProcessor::GetRootSignature(
     shared_memory_and_edram_ranges[0].BaseShaderRegister = 0;
     shared_memory_and_edram_ranges[0].RegisterSpace = 0;
     shared_memory_and_edram_ranges[0].OffsetInDescriptorsFromTableStart = 0;
-    if (render_target_cache_->IsROVUsedForEDRAM()) {
+    if (IsROVUsedForEDRAM()) {
       ++parameter.DescriptorTable.NumDescriptorRanges;
       shared_memory_and_edram_ranges[1].RangeType =
           D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
@@ -350,7 +367,7 @@ ID3D12RootSignature* D3D12CommandProcessor::GetRootSignature(
   }
 
   ID3D12RootSignature* root_signature = ui::d3d12::util::CreateRootSignature(
-      GetD3D12Context()->GetD3D12Provider()->GetDevice(), desc);
+      GetD3D12Context()->GetD3D12Provider(), desc);
   if (root_signature == nullptr) {
     XELOGE(
         "Failed to create a root signature with %u pixel textures, %u pixel "
@@ -653,8 +670,8 @@ bool D3D12CommandProcessor::SetupContext() {
     return false;
   }
 
-  pipeline_cache_ = std::make_unique<PipelineCache>(
-      this, register_file_, render_target_cache_->IsROVUsedForEDRAM());
+  pipeline_cache_ = std::make_unique<PipelineCache>(this, register_file_,
+                                                    IsROVUsedForEDRAM());
 
   primitive_converter_ =
       std::make_unique<PrimitiveConverter>(this, register_file_, memory_);
@@ -1117,8 +1134,11 @@ bool D3D12CommandProcessor::IssueDraw(PrimitiveType primitive_type,
   }
 
   uint32_t color_mask = GetCurrentColorMask(pixel_shader);
-  if (!color_mask && !(regs[XE_GPU_REG_RB_DEPTHCONTROL].u32 & (0x1 | 0x4))) {
-    // Not writing to color, depth or doing stencil test, so doesn't draw.
+  uint32_t rb_depthcontrol = regs[XE_GPU_REG_RB_DEPTHCONTROL].u32;
+  uint32_t rb_stencilrefmask = regs[XE_GPU_REG_RB_STENCILREFMASK].u32;
+  if (!color_mask && ((rb_depthcontrol & (0x2 | 0x4)) != (0x2 | 0x4)) &&
+      (!(rb_depthcontrol & 0x1) || !(rb_stencilrefmask & (0xFF << 16)))) {
+    // Not writing to color, depth or stencil, so doesn't draw.
     return true;
   }
 
@@ -1134,6 +1154,12 @@ bool D3D12CommandProcessor::IssueDraw(PrimitiveType primitive_type,
       render_target_cache_->GetCurrentPipelineRenderTargets();
 
   bool indexed = index_buffer_info != nullptr && index_buffer_info->guest_base;
+
+  // TODO(Triang3l): Non-indexed line loops (by movc'ing zero to the vertex
+  // index if it's one beyond the end).
+  if (primitive_type == PrimitiveType::kLineLoop && !indexed) {
+    return false;
+  }
 
   // Set the primitive topology.
   PrimitiveType primitive_type_converted =
@@ -1227,7 +1253,7 @@ bool D3D12CommandProcessor::IssueDraw(PrimitiveType primitive_type,
     vertex_buffers_resident[vfetch_index >> 6] |= 1ull << (vfetch_index & 63);
   }
 
-  if (render_target_cache_->IsROVUsedForEDRAM()) {
+  if (IsROVUsedForEDRAM()) {
     render_target_cache_->UseEDRAMAsUAV();
   }
   if (indexed) {
@@ -1548,7 +1574,7 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
     ff_scissor_update_needed_ = false;
   }
 
-  if (!render_target_cache_->IsROVUsedForEDRAM()) {
+  if (!IsROVUsedForEDRAM()) {
     // Blend factor.
     ff_blend_factor_update_needed_ |=
         ff_blend_factor_[0] != regs[XE_GPU_REG_RB_BLEND_RED].f32;
@@ -1589,6 +1615,9 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
 
   uint32_t vgt_indx_offset = regs[XE_GPU_REG_VGT_INDX_OFFSET].u32;
   uint32_t pa_cl_vte_cntl = regs[XE_GPU_REG_PA_CL_VTE_CNTL].u32;
+  uint32_t rb_depthcontrol = regs[XE_GPU_REG_RB_DEPTHCONTROL].u32;
+  uint32_t rb_stencilrefmask = regs[XE_GPU_REG_RB_STENCILREFMASK].u32;
+  uint32_t rb_depth_info = regs[XE_GPU_REG_RB_DEPTH_INFO].u32;
   uint32_t pa_cl_clip_cntl = regs[XE_GPU_REG_PA_CL_CLIP_CNTL].u32;
   uint32_t pa_su_vtx_cntl = regs[XE_GPU_REG_PA_SU_VTX_CNTL].u32;
   uint32_t pa_su_point_size = regs[XE_GPU_REG_PA_SU_POINT_SIZE].u32;
@@ -1642,6 +1671,35 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
       uint32_t(ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
     flags |= DxbcShaderTranslator::kSysFlag_Color3Gamma;
   }
+  if (IsROVUsedForEDRAM()) {
+    if (rb_depthcontrol & (0x1 | 0x2)) {
+      flags |= DxbcShaderTranslator::kSysFlag_DepthStencil;
+      if (DepthRenderTargetFormat((rb_depth_info >> 16) & 0x1) ==
+          DepthRenderTargetFormat::kD24FS8) {
+        flags |= DxbcShaderTranslator::kSysFlag_DepthFloat24;
+      }
+      if (rb_depthcontrol & 0x2) {
+        flags |= ((rb_depthcontrol >> 4) & 0x7)
+                 << DxbcShaderTranslator::kSysFlag_DepthPassIfLess_Shift;
+        if (rb_depthcontrol & 0x4) {
+          flags |= DxbcShaderTranslator::kSysFlag_DepthWriteMask |
+                   DxbcShaderTranslator::kSysFlag_DepthStencilWrite;
+        }
+      } else {
+        // In case stencil is used without depth testing - always pass, and
+        // don't modify the stored depth.
+        flags |= DxbcShaderTranslator::kSysFlag_DepthPassIfLess |
+                 DxbcShaderTranslator::kSysFlag_DepthPassIfEqual |
+                 DxbcShaderTranslator::kSysFlag_DepthPassIfGreater;
+      }
+      if (rb_depthcontrol & 0x1) {
+        flags |= DxbcShaderTranslator::kSysFlag_StencilTest;
+        if (rb_stencilrefmask & (0xFF << 16)) {
+          flags |= DxbcShaderTranslator::kSysFlag_DepthStencilWrite;
+        }
+      }
+    }
+  }
   dirty |= system_constants_.flags != flags;
   system_constants_.flags = flags;
 
@@ -1681,7 +1739,10 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
   float ndc_offset_x = (pa_cl_vte_cntl & (1 << 1)) ? 0.0f : -1.0f;
   float ndc_offset_y = (pa_cl_vte_cntl & (1 << 3)) ? 0.0f : 1.0f;
   float ndc_offset_z = gl_clip_space_def ? 0.5f : 0.0f;
-  float pixel_half_pixel_offset = 0.0f;
+  // Like in OpenGL - VPOS giving pixel centers.
+  // TODO(Triang3l): Check if ps_param_gen should give center positions in
+  // OpenGL mode on the Xbox 360.
+  float pixel_half_pixel_offset = 0.5f;
   if (FLAGS_d3d12_half_pixel_offset && !(pa_su_vtx_cntl & (1 << 0))) {
     // Signs are hopefully correct here, tested in GTA IV on both clearing
     // (without a viewport) and drawing things near the edges of the screen.
@@ -1699,7 +1760,8 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     } else {
       ndc_offset_y -= 1.0f / 2560.0f;
     }
-    pixel_half_pixel_offset = -0.5f;
+    // Like in Direct3D 9 - VPOS giving the top-left corner.
+    pixel_half_pixel_offset = 0.0f;
   }
   dirty |= system_constants_.ndc_scale[0] != ndc_scale_x;
   dirty |= system_constants_.ndc_scale[1] != ndc_scale_y;
@@ -1821,7 +1883,8 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     // Exponent bias is in bits 20:25 of RB_COLOR_INFO.
     int32_t color_exp_bias = int32_t(color_info << 6) >> 26;
     ColorRenderTargetFormat color_format =
-        ColorRenderTargetFormat((color_info >> 16) & 0xF);
+        RenderTargetCache::GetBaseColorFormat(
+            ColorRenderTargetFormat((color_info >> 16) & 0xF));
     if (color_format == ColorRenderTargetFormat::k_16_16 ||
         color_format == ColorRenderTargetFormat::k_16_16_16_16) {
       // On the Xbox 360, k_16_16_EDRAM and k_16_16_16_16_EDRAM internally have
@@ -1830,7 +1893,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
       // value returned from the shader needs to be divided by 32 (blending will
       // be incorrect in this case, but there's no other way without using ROV).
       // http://www.students.science.uu.nl/~3220516/advancedgraphics/papers/inferred_lighting.pdf
-      if (!render_target_cache_->IsROVUsedForEDRAM()) {
+      if (!IsROVUsedForEDRAM()) {
         color_exp_bias -= 5;
       }
     }
@@ -1839,9 +1902,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
         0x3F800000 + (color_exp_bias << 23);
     dirty |= system_constants_.color_exp_bias[i] != color_exp_bias_scale;
     system_constants_.color_exp_bias[i] = color_exp_bias_scale;
-    if (render_target_cache_->IsROVUsedForEDRAM()) {
-      uint32_t rt_pair_index = i >> 1;
-      uint32_t rt_pair_comp = (i & 1) << 1;
+    if (IsROVUsedForEDRAM()) {
       uint32_t edram_base_dwords = (color_info & 0xFFF) * 1280;
       dirty |= system_constants_.edram_base_dwords[i] != edram_base_dwords;
       system_constants_.edram_base_dwords[i] = edram_base_dwords;
@@ -1852,60 +1913,21 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
           80;
       dirty |= system_constants_.edram_pitch_tiles != edram_pitch_tiles;
       system_constants_.edram_pitch_tiles = edram_pitch_tiles;
-      static const uint32_t kRTFormatFlags[16] = {
-          // k_8_8_8_8
-          DxbcShaderTranslator::kRTFlag_FormatFixed,
-          // k_8_8_8_8_GAMMA
-          DxbcShaderTranslator::kRTFlag_FormatFixed,
-          // k_2_10_10_10
-          DxbcShaderTranslator::kRTFlag_FormatFixed,
-          // k_2_10_10_10_FLOAT
-          DxbcShaderTranslator::kRTFlag_FormatFloat10,
-          // k_16_16
-          DxbcShaderTranslator::kRTFlag_FormatFixed,
-          // k_16_16_16_16
-          DxbcShaderTranslator::kRTFlag_Format64bpp |
-              DxbcShaderTranslator::kRTFlag_FormatFixed,
-          // k_16_16_FLOAT
-          DxbcShaderTranslator::kRTFlag_FormatFloat16,
-          // k_16_16_16_16_FLOAT
-          DxbcShaderTranslator::kRTFlag_Format64bpp |
-              DxbcShaderTranslator::kRTFlag_FormatFloat16,
-          // Unused
-          0,
-          // Unused
-          0,
-          // k_2_10_10_10_AS_16_16_16_16
-          DxbcShaderTranslator::kRTFlag_FormatFixed,
-          // Unused.
-          0,
-          // k_2_10_10_10_FLOAT_AS_16_16_16_16
-          DxbcShaderTranslator::kRTFlag_FormatFloat10,
-          // Unused.
-          0,
-          // k_32_FLOAT
-          0,
-          // k_32_32_FLOAT
-          DxbcShaderTranslator::kRTFlag_Format64bpp,
-      };
-      static const uint32_t kRTFormatAllComponentsMask[16] = {
-          0b1111, 0b1111, 0b1111, 0b1111, 0b0011, 0b1111, 0b0011, 0b1111,
-          0b0000, 0b0000, 0b1111, 0b0000, 0b1111, 0b0000, 0b0001, 0b0011,
-      };
-      uint32_t rt_mask_all = kRTFormatAllComponentsMask[uint32_t(color_format)];
-      uint32_t rt_mask = (rb_color_mask >> (i * 4)) & rt_mask_all;
-      uint32_t rt_flags = kRTFormatFlags[uint32_t(color_format)];
+      uint32_t rt_flags =
+          DxbcShaderTranslator::GetColorFormatRTFlags(color_format);
+      // Exclude unused components from the write mask.
+      uint32_t rt_mask =
+          (rb_color_mask >> (i * 4)) & 0xF &
+          ~(rt_flags >> DxbcShaderTranslator::kRTFlag_FormatUnusedR_Shift);
       if (rt_mask != 0) {
-        rt_flags |= DxbcShaderTranslator::kRTFlag_Used;
-        if (rt_mask != rt_mask_all) {
-          rt_flags |= DxbcShaderTranslator::kRTFlag_Load;
-        }
+        rt_flags |= rt_mask << DxbcShaderTranslator::kRTFlag_WriteR_Shift;
         uint32_t blend_x, blend_y;
         if (colorcontrol_blend_enable &&
             DxbcShaderTranslator::GetBlendConstants(blend_control, blend_x,
                                                     blend_y)) {
-          rt_flags |= DxbcShaderTranslator::kRTFlag_Load |
-                      DxbcShaderTranslator::kRTFlag_Blend;
+          rt_flags |= DxbcShaderTranslator::kRTFlag_Blend;
+          uint32_t rt_pair_index = i >> 1;
+          uint32_t rt_pair_comp = (i & 1) << 1;
           if (system_constants_
                   .edram_blend_rt01_rt23[rt_pair_index][rt_pair_comp] !=
               blend_x) {
@@ -1927,143 +1949,8 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
       system_constants_.edram_rt_flags[i] = rt_flags;
       if (system_constants_color_formats_[i] != color_format) {
         dirty = true;
-        uint32_t color_mask = UINT32_MAX, alpha_mask = UINT32_MAX;
-        // Initialize min/max to Infinity.
-        uint32_t color_min = 0xFF800000u, alpha_min = 0xFF800000u;
-        uint32_t color_max = 0x7F800000u, alpha_max = 0x7F800000u;
-        float color_load_scale = 1.0f, alpha_load_scale = 1.0f;
-        float color_store_scale = 1.0f, alpha_store_scale = 1.0f;
-        switch (color_format) {
-          case ColorRenderTargetFormat::k_8_8_8_8:
-          case ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
-            system_constants_.edram_rt_pack_width_low[i][0] = 8;
-            system_constants_.edram_rt_pack_width_low[i][1] = 8;
-            system_constants_.edram_rt_pack_width_low[i][2] = 8;
-            system_constants_.edram_rt_pack_width_low[i][3] = 8;
-            system_constants_.edram_rt_pack_offset_low[i][0] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][1] = 8;
-            system_constants_.edram_rt_pack_offset_low[i][2] = 16;
-            system_constants_.edram_rt_pack_offset_low[i][3] = 24;
-            color_mask = alpha_mask = 255;
-            color_min = alpha_min = 0;
-            color_max = alpha_max = 0x3F800000;
-            color_load_scale = alpha_load_scale = 1.0f / 255.0f;
-            color_store_scale = alpha_store_scale = 255.0f;
-            break;
-          case ColorRenderTargetFormat::k_2_10_10_10:
-          case ColorRenderTargetFormat::k_2_10_10_10_AS_16_16_16_16:
-            system_constants_.edram_rt_pack_width_low[i][0] = 10;
-            system_constants_.edram_rt_pack_width_low[i][1] = 10;
-            system_constants_.edram_rt_pack_width_low[i][2] = 10;
-            system_constants_.edram_rt_pack_width_low[i][3] = 2;
-            system_constants_.edram_rt_pack_offset_low[i][0] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][1] = 10;
-            system_constants_.edram_rt_pack_offset_low[i][2] = 20;
-            system_constants_.edram_rt_pack_offset_low[i][3] = 30;
-            color_mask = 1023;
-            alpha_mask = 3;
-            color_min = alpha_min = 0;
-            color_max = alpha_max = 0x3F800000;
-            color_load_scale = 1.0f / 1023.0f;
-            alpha_load_scale = 1.0f / 3.0f;
-            color_store_scale = 1023.0f;
-            alpha_store_scale = 3.0f;
-            break;
-          case ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
-          case ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
-            system_constants_.edram_rt_pack_width_low[i][0] = 10;
-            system_constants_.edram_rt_pack_width_low[i][1] = 10;
-            system_constants_.edram_rt_pack_width_low[i][2] = 10;
-            system_constants_.edram_rt_pack_width_low[i][3] = 2;
-            system_constants_.edram_rt_pack_offset_low[i][0] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][1] = 10;
-            system_constants_.edram_rt_pack_offset_low[i][2] = 20;
-            system_constants_.edram_rt_pack_offset_low[i][3] = 30;
-            color_mask = 1023;
-            alpha_mask = 3;
-            color_min = alpha_min = 0;
-            // 31.875.
-            color_max = 0x41FF0000;
-            alpha_max = 0x3F800000;
-            alpha_load_scale = 1.0f / 3.0f;
-            alpha_store_scale = 3.0f;
-            break;
-          case ColorRenderTargetFormat::k_16_16:
-          case ColorRenderTargetFormat::k_16_16_16_16:
-            system_constants_.edram_rt_pack_width_low[i][0] = 16;
-            system_constants_.edram_rt_pack_width_low[i][1] = 16;
-            system_constants_.edram_rt_pack_width_low[i][2] = 0;
-            system_constants_.edram_rt_pack_width_low[i][3] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][0] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][1] = 16;
-            system_constants_.edram_rt_pack_offset_low[i][2] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][3] = 0;
-            // TODO(Triang3l): 64bpp variant.
-            // Color and alpha mask UINT32_MAX because the format is signed.
-            // -32.0.
-            color_min = alpha_min = 0xC2000000u;
-            // 32.0.
-            color_max = alpha_max = 0x42000000u;
-            color_load_scale = alpha_load_scale = 32.0f / 32767.0f;
-            color_store_scale = alpha_store_scale = 32767.0f / 32.0f;
-            break;
-          case ColorRenderTargetFormat::k_16_16_FLOAT:
-          case ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
-            system_constants_.edram_rt_pack_width_low[i][0] = 16;
-            system_constants_.edram_rt_pack_width_low[i][1] = 16;
-            system_constants_.edram_rt_pack_width_low[i][2] = 0;
-            system_constants_.edram_rt_pack_width_low[i][3] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][0] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][1] = 16;
-            system_constants_.edram_rt_pack_offset_low[i][2] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][3] = 0;
-            // TODO(Triang3l): 64bpp variant.
-            color_mask = alpha_mask = 0xFFFF;
-            break;
-          case ColorRenderTargetFormat::k_32_FLOAT:
-          case ColorRenderTargetFormat::k_32_32_FLOAT:
-            system_constants_.edram_rt_pack_width_low[i][0] = 32;
-            system_constants_.edram_rt_pack_width_low[i][1] = 0;
-            system_constants_.edram_rt_pack_width_low[i][2] = 0;
-            system_constants_.edram_rt_pack_width_low[i][3] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][0] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][1] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][2] = 0;
-            system_constants_.edram_rt_pack_offset_low[i][3] = 0;
-            // TODO(Triang3l): 64bpp variant.
-            break;
-          default:
-            assert_always();
-            break;
-        }
-        system_constants_
-            .edram_load_mask_rt01_rt23[rt_pair_index][rt_pair_comp] =
-            color_mask;
-        system_constants_
-            .edram_load_mask_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
-            alpha_mask;
-        system_constants_
-            .edram_load_scale_rt01_rt23[rt_pair_index][rt_pair_comp] =
-            color_load_scale;
-        system_constants_
-            .edram_load_scale_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
-            alpha_load_scale;
-        system_constants_
-            .edram_store_min_rt01_rt23[rt_pair_index][rt_pair_comp] = color_min;
-        system_constants_
-            .edram_store_min_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
-            alpha_min;
-        system_constants_
-            .edram_store_max_rt01_rt23[rt_pair_index][rt_pair_comp] = color_max;
-        system_constants_
-            .edram_store_max_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
-            alpha_max;
-        system_constants_
-            .edram_store_scale_rt01_rt23[rt_pair_index][rt_pair_comp] =
-            color_store_scale;
-        system_constants_
-            .edram_store_scale_rt01_rt23[rt_pair_index][rt_pair_comp + 1] =
-            alpha_store_scale;
+        DxbcShaderTranslator::SetColorFormatSystemConstants(system_constants_,
+                                                            i, color_format);
         system_constants_color_formats_[i] = color_format;
       }
     } else {
@@ -2074,8 +1961,77 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     }
   }
 
-  // Blend constant for ROV blending.
-  if (render_target_cache_->IsROVUsedForEDRAM()) {
+  // Depth/stencil testing and blend constant for ROV blending.
+  if (IsROVUsedForEDRAM()) {
+    uint32_t depth_base_dwords =
+        (regs[XE_GPU_REG_RB_DEPTH_INFO].u32 & 0xFFF) * 1280;
+    dirty |= system_constants_.edram_depth_base_dwords != depth_base_dwords;
+    system_constants_.edram_depth_base_dwords = depth_base_dwords;
+
+    if (rb_depthcontrol & 0x1) {
+      uint32_t stencil_value;
+
+      stencil_value = rb_stencilrefmask & 0xFF;
+      dirty |= system_constants_.edram_stencil_reference != stencil_value;
+      system_constants_.edram_stencil_reference = stencil_value;
+      stencil_value = (rb_stencilrefmask >> 8) & 0xFF;
+      dirty |= system_constants_.edram_stencil_read_mask != stencil_value;
+      system_constants_.edram_stencil_read_mask = stencil_value;
+      stencil_value = (rb_stencilrefmask >> 16) & 0xFF;
+      dirty |= system_constants_.edram_stencil_write_mask != stencil_value;
+      system_constants_.edram_stencil_write_mask = stencil_value;
+
+      static const uint32_t kStencilOpMap[] = {
+          DxbcShaderTranslator::kStencilOp_Keep,
+          DxbcShaderTranslator::kStencilOp_Zero,
+          DxbcShaderTranslator::kStencilOp_Replace,
+          DxbcShaderTranslator::kStencilOp_IncrementSaturate,
+          DxbcShaderTranslator::kStencilOp_DecrementSaturate,
+          DxbcShaderTranslator::kStencilOp_Invert,
+          DxbcShaderTranslator::kStencilOp_Increment,
+          DxbcShaderTranslator::kStencilOp_Decrement,
+      };
+
+      stencil_value = kStencilOpMap[(rb_depthcontrol >> 11) & 0x7];
+      dirty |= system_constants_.edram_stencil_front_fail != stencil_value;
+      system_constants_.edram_stencil_front_fail = stencil_value;
+      stencil_value = kStencilOpMap[(rb_depthcontrol >> 17) & 0x7];
+      dirty |=
+          system_constants_.edram_stencil_front_depth_fail != stencil_value;
+      system_constants_.edram_stencil_front_depth_fail = stencil_value;
+      stencil_value = kStencilOpMap[(rb_depthcontrol >> 14) & 0x7];
+      dirty |= system_constants_.edram_stencil_front_pass != stencil_value;
+      system_constants_.edram_stencil_front_pass = stencil_value;
+      stencil_value = (rb_depthcontrol >> 8) & 0x7;
+      dirty |=
+          system_constants_.edram_stencil_front_comparison != stencil_value;
+      system_constants_.edram_stencil_front_comparison = stencil_value;
+
+      if (rb_depthcontrol & 0x80) {
+        stencil_value = kStencilOpMap[(rb_depthcontrol >> 23) & 0x7];
+        dirty |= system_constants_.edram_stencil_back_fail != stencil_value;
+        system_constants_.edram_stencil_back_fail = stencil_value;
+        stencil_value = kStencilOpMap[(rb_depthcontrol >> 29) & 0x7];
+        dirty |=
+            system_constants_.edram_stencil_back_depth_fail != stencil_value;
+        system_constants_.edram_stencil_back_depth_fail = stencil_value;
+        stencil_value = kStencilOpMap[(rb_depthcontrol >> 26) & 0x7];
+        dirty |= system_constants_.edram_stencil_back_pass != stencil_value;
+        system_constants_.edram_stencil_back_pass = stencil_value;
+        stencil_value = (rb_depthcontrol >> 20) & 0x7;
+        dirty |=
+            system_constants_.edram_stencil_back_comparison != stencil_value;
+        system_constants_.edram_stencil_back_comparison = stencil_value;
+      } else {
+        dirty |= std::memcmp(system_constants_.edram_stencil_back,
+                             system_constants_.edram_stencil_front,
+                             4 * sizeof(uint32_t)) != 0;
+        std::memcpy(system_constants_.edram_stencil_back,
+                    system_constants_.edram_stencil_front,
+                    4 * sizeof(uint32_t));
+      }
+    }
+
     dirty |= system_constants_.edram_blend_constant[0] !=
              regs[XE_GPU_REG_RB_BLEND_RED].f32;
     system_constants_.edram_blend_constant[0] =
@@ -2361,7 +2317,7 @@ bool D3D12CommandProcessor::UpdateBindings(
   // All the constants + shared memory + textures.
   uint32_t view_count_full_update =
       6 + texture_count_vertex + texture_count_pixel;
-  if (render_target_cache_->IsROVUsedForEDRAM()) {
+  if (IsROVUsedForEDRAM()) {
     // + EDRAM UAV.
     ++view_count_full_update;
   }
@@ -2413,7 +2369,7 @@ bool D3D12CommandProcessor::UpdateBindings(
     gpu_handle_shared_memory_and_edram_ = view_gpu_handle;
     view_cpu_handle.ptr += descriptor_size_view;
     view_gpu_handle.ptr += descriptor_size_view;
-    if (render_target_cache_->IsROVUsedForEDRAM()) {
+    if (IsROVUsedForEDRAM()) {
       render_target_cache_->CreateEDRAMUint32UAV(view_cpu_handle);
       view_cpu_handle.ptr += descriptor_size_view;
       view_gpu_handle.ptr += descriptor_size_view;
