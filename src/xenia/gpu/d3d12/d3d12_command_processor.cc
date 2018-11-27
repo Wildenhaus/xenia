@@ -24,17 +24,18 @@
 #include "xenia/gpu/xenos.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
 
+DEFINE_bool(d3d12_edram_rov, true,
+            "Use rasterizer-ordered views for render target emulation where "
+            "available.");
 // Some games (such as Banjo-Kazooie) are not aware of the half-pixel offset and
 // may be blurry or have texture sampling artifacts, in this case the user may
 // disable half-pixel offset by setting this to false.
 DEFINE_bool(d3d12_half_pixel_offset, true,
-            "Enable half-pixel vertex and VPOS offset");
-// Disabled because the current positions look worse than sampling at centers.
-DEFINE_bool(d3d12_programmable_sample_positions, false,
-            "Enable custom SSAA sample positions where available");
-DEFINE_bool(d3d12_rov, false,
-            "Use rasterizer-ordered views for render target emulation where "
-            "available.");
+            "Enable half-pixel vertex and VPOS offset.");
+DEFINE_bool(d3d12_ssaa_custom_sample_positions, false,
+            "Enable custom SSAA sample positions for the RTV/DSV rendering "
+            "path where available instead of centers (experimental, not very "
+            "high-quality).");
 
 namespace xe {
 namespace gpu {
@@ -84,7 +85,7 @@ ID3D12GraphicsCommandList1* D3D12CommandProcessor::GetCurrentCommandList1()
 }
 
 bool D3D12CommandProcessor::IsROVUsedForEDRAM() const {
-  if (!FLAGS_d3d12_rov) {
+  if (!FLAGS_d3d12_edram_rov) {
     return false;
   }
   auto provider = GetD3D12Context()->GetD3D12Provider();
@@ -538,7 +539,12 @@ void D3D12CommandProcessor::SetSamplePositions(MsaaSamples sample_positions) {
   if (current_sample_positions_ == sample_positions) {
     return;
   }
-  if (FLAGS_d3d12_programmable_sample_positions) {
+  // Evaluating attributes by sample index - which is done for per-sample
+  // depth - is undefined with programmable sample positions, so can't use them
+  // for ROV output. There's hardly any difference between 2,6 (of 0 and 3 with
+  // 4x MSAA) and 4,4 anyway.
+  // https://docs.microsoft.com/en-us/windows/desktop/api/d3d12/nf-d3d12-id3d12graphicscommandlist1-setsamplepositions
+  if (FLAGS_d3d12_ssaa_custom_sample_positions && !IsROVUsedForEDRAM()) {
     auto provider = GetD3D12Context()->GetD3D12Provider();
     auto tier = provider->GetProgrammableSamplePositionsTier();
     auto command_list = GetCurrentCommandList1();
@@ -1027,6 +1033,8 @@ void D3D12CommandProcessor::PerformSwap(uint32_t frontbuffer_ptr,
       graphics_system->StretchTextureToFrontBuffer(
           descriptor_gpu_start, &gamma_ramp_gpu_handle,
           use_pwl_gamma_ramp ? (1.0f / 128.0f) : (1.0f / 256.0f), command_list);
+      // Ending the current frame's command list anyway, so no need to unbind
+      // the render targets when using ROV.
 
       PushTransitionBarrier(swap_texture_, D3D12_RESOURCE_STATE_RENDER_TARGET,
                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1220,8 +1228,9 @@ bool D3D12CommandProcessor::IssueDraw(PrimitiveType primitive_type,
 
   // Update system constants before uploading them.
   UpdateSystemConstantValues(
+      primitive_type,
       indexed ? index_buffer_info->endianness : Endian::kUnspecified,
-      pipeline_render_targets);
+      color_mask, pipeline_render_targets);
 
   // Update constant buffers, descriptors and root parameters.
   if (!UpdateBindings(command_list, vertex_shader, pixel_shader,
@@ -1475,11 +1484,17 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
   }
 
   // Supersampling replacing multisampling due to difficulties of emulating
-  // EDRAM with multisampling.
-  MsaaSamples msaa_samples =
-      MsaaSamples((regs[XE_GPU_REG_RB_SURFACE_INFO].u32 >> 16) & 0x3);
-  uint32_t ssaa_scale_x = msaa_samples >= MsaaSamples::k4X ? 2 : 1;
-  uint32_t ssaa_scale_y = msaa_samples >= MsaaSamples::k2X ? 2 : 1;
+  // EDRAM with multisampling with RTV/DSV (with ROV, there's MSAA).
+  uint32_t ssaa_scale_x, ssaa_scale_y;
+  if (IsROVUsedForEDRAM()) {
+    ssaa_scale_x = 1;
+    ssaa_scale_y = 1;
+  } else {
+    MsaaSamples msaa_samples =
+        MsaaSamples((regs[XE_GPU_REG_RB_SURFACE_INFO].u32 >> 16) & 0x3);
+    ssaa_scale_x = msaa_samples >= MsaaSamples::k4X ? 2 : 1;
+    ssaa_scale_y = msaa_samples >= MsaaSamples::k2X ? 2 : 1;
+  }
 
   // Viewport.
   // PA_CL_VTE_CNTL contains whether offsets and scales are enabled.
@@ -1605,7 +1620,7 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
 }
 
 void D3D12CommandProcessor::UpdateSystemConstantValues(
-    Endian index_endian,
+    PrimitiveType primitive_type, Endian index_endian, uint32_t color_mask,
     const RenderTargetCache::PipelineRenderTarget render_targets[4]) {
   auto& regs = *register_file_;
 
@@ -1627,6 +1642,77 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
   uint32_t rb_surface_info = regs[XE_GPU_REG_RB_SURFACE_INFO].u32;
   uint32_t rb_colorcontrol = regs[XE_GPU_REG_RB_COLORCONTROL].u32;
   uint32_t rb_alpha_ref = regs[XE_GPU_REG_RB_ALPHA_REF].u32;
+  uint32_t pa_su_sc_mode_cntl = regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL].u32;
+
+  // Get the color info register values for each render target, and also put
+  // some safety measures for the ROV path - disable fully aliased render
+  // targets. Also, for ROV, exclude components that don't exist in the format
+  // from the write mask.
+  uint32_t color_infos[4], rov_color_format_rt_flags[4];
+  for (uint32_t i = 0; i < 4; ++i) {
+    uint32_t color_info;
+    switch (i) {
+      case 1:
+        color_info = regs[XE_GPU_REG_RB_COLOR1_INFO].u32;
+        break;
+      case 2:
+        color_info = regs[XE_GPU_REG_RB_COLOR2_INFO].u32;
+        break;
+      case 3:
+        color_info = regs[XE_GPU_REG_RB_COLOR3_INFO].u32;
+        break;
+      default:
+        color_info = regs[XE_GPU_REG_RB_COLOR_INFO].u32;
+    }
+    color_infos[i] = color_info;
+
+    if (IsROVUsedForEDRAM()) {
+      ColorRenderTargetFormat color_format =
+          RenderTargetCache::GetBaseColorFormat(
+              ColorRenderTargetFormat((color_info >> 16) & 0xF));
+      uint32_t rt_flags =
+          DxbcShaderTranslator::GetColorFormatRTFlags(color_format);
+      rov_color_format_rt_flags[i] = rt_flags;
+
+      // Exclude unused components from the write mask.
+      color_mask &=
+          ~(((rt_flags >> DxbcShaderTranslator::kRTFlag_FormatUnusedR_Shift) &
+             0xF)
+            << (i * 4));
+
+      // Disable the render target if it has the same EDRAM base as another one
+      // (with a smaller index - assume it's more important).
+      if (color_mask & (0xF << (i * 4))) {
+        uint32_t edram_base = color_info & 0xFFF;
+        for (uint32_t j = 0; j < i; ++j) {
+          if ((color_mask & (0xF << (j * 4))) &&
+              edram_base == (color_infos[j] & 0xFFF)) {
+            color_mask &= ~(uint32_t(0xF << (i * 4)));
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // Disable depth and stencil if it aliases a color render target (for
+  // instance, during the XBLA logo in Banjo-Kazooie, though depth writing is
+  // already disabled there).
+  if (IsROVUsedForEDRAM() && (rb_depthcontrol & (0x1 | 0x2))) {
+    uint32_t edram_base_depth = rb_depth_info & 0xFFF;
+    for (uint32_t i = 0; i < 4; ++i) {
+      if ((color_mask & (0xF << (i * 4))) &&
+          edram_base_depth == (color_infos[i] & 0xFFF)) {
+        rb_depthcontrol &= ~(uint32_t(0x1 | 0x2));
+        break;
+      }
+    }
+  }
+
+  // Get viewport Z scale - needed for flags and ROV output.
+  float viewport_scale_z = (pa_cl_vte_cntl & (1 << 4))
+                               ? regs[XE_GPU_REG_PA_CL_VPORT_ZSCALE].f32
+                               : 1.0f;
 
   bool dirty = false;
 
@@ -1650,8 +1736,7 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
     flags |= DxbcShaderTranslator::kSysFlag_WNotReciprocal;
   }
   // Reversed depth.
-  if ((pa_cl_vte_cntl & (1 << 4)) &&
-      regs[XE_GPU_REG_PA_CL_VPORT_ZSCALE].f32 < 0.0f) {
+  if (viewport_scale_z < 0.0f) {
     flags |= DxbcShaderTranslator::kSysFlag_ReverseZ;
   }
   // Gamma writing.
@@ -1671,32 +1756,30 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
       uint32_t(ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
     flags |= DxbcShaderTranslator::kSysFlag_Color3Gamma;
   }
-  if (IsROVUsedForEDRAM()) {
-    if (rb_depthcontrol & (0x1 | 0x2)) {
-      flags |= DxbcShaderTranslator::kSysFlag_DepthStencil;
-      if (DepthRenderTargetFormat((rb_depth_info >> 16) & 0x1) ==
-          DepthRenderTargetFormat::kD24FS8) {
-        flags |= DxbcShaderTranslator::kSysFlag_DepthFloat24;
+  if (IsROVUsedForEDRAM() && (rb_depthcontrol & (0x1 | 0x2))) {
+    flags |= DxbcShaderTranslator::kSysFlag_DepthStencil;
+    if (DepthRenderTargetFormat((rb_depth_info >> 16) & 0x1) ==
+        DepthRenderTargetFormat::kD24FS8) {
+      flags |= DxbcShaderTranslator::kSysFlag_DepthFloat24;
+    }
+    if (rb_depthcontrol & 0x2) {
+      flags |= ((rb_depthcontrol >> 4) & 0x7)
+               << DxbcShaderTranslator::kSysFlag_DepthPassIfLess_Shift;
+      if (rb_depthcontrol & 0x4) {
+        flags |= DxbcShaderTranslator::kSysFlag_DepthWriteMask |
+                 DxbcShaderTranslator::kSysFlag_DepthStencilWrite;
       }
-      if (rb_depthcontrol & 0x2) {
-        flags |= ((rb_depthcontrol >> 4) & 0x7)
-                 << DxbcShaderTranslator::kSysFlag_DepthPassIfLess_Shift;
-        if (rb_depthcontrol & 0x4) {
-          flags |= DxbcShaderTranslator::kSysFlag_DepthWriteMask |
-                   DxbcShaderTranslator::kSysFlag_DepthStencilWrite;
-        }
-      } else {
-        // In case stencil is used without depth testing - always pass, and
-        // don't modify the stored depth.
-        flags |= DxbcShaderTranslator::kSysFlag_DepthPassIfLess |
-                 DxbcShaderTranslator::kSysFlag_DepthPassIfEqual |
-                 DxbcShaderTranslator::kSysFlag_DepthPassIfGreater;
-      }
-      if (rb_depthcontrol & 0x1) {
-        flags |= DxbcShaderTranslator::kSysFlag_StencilTest;
-        if (rb_stencilrefmask & (0xFF << 16)) {
-          flags |= DxbcShaderTranslator::kSysFlag_DepthStencilWrite;
-        }
+    } else {
+      // In case stencil is used without depth testing - always pass, and
+      // don't modify the stored depth.
+      flags |= DxbcShaderTranslator::kSysFlag_DepthPassIfLess |
+               DxbcShaderTranslator::kSysFlag_DepthPassIfEqual |
+               DxbcShaderTranslator::kSysFlag_DepthPassIfGreater;
+    }
+    if (rb_depthcontrol & 0x1) {
+      flags |= DxbcShaderTranslator::kSysFlag_StencilTest;
+      if (rb_stencilrefmask & (0xFF << 16)) {
+        flags |= DxbcShaderTranslator::kSysFlag_DepthStencilWrite;
       }
     }
   }
@@ -1815,14 +1898,15 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
   dirty |= system_constants_.pixel_pos_reg != pixel_pos_reg;
   system_constants_.pixel_pos_reg = pixel_pos_reg;
 
-  // Supersampling anti-aliasing pixel scale inverse for pixel positions.
+  // Log2 of sample count, for scaling VPOS with SSAA (without ROV) and for
+  // EDRAM address calculation with MSAA (with ROV).
   MsaaSamples msaa_samples = MsaaSamples((rb_surface_info >> 16) & 0x3);
-  float ssaa_inv_scale_x = msaa_samples >= MsaaSamples::k4X ? 0.5f : 1.0f;
-  float ssaa_inv_scale_y = msaa_samples >= MsaaSamples::k2X ? 0.5f : 1.0f;
-  dirty |= system_constants_.ssaa_inv_scale[0] != ssaa_inv_scale_x;
-  dirty |= system_constants_.ssaa_inv_scale[1] != ssaa_inv_scale_y;
-  system_constants_.ssaa_inv_scale[0] = ssaa_inv_scale_x;
-  system_constants_.ssaa_inv_scale[1] = ssaa_inv_scale_y;
+  uint32_t sample_count_log2_x = msaa_samples >= MsaaSamples::k4X ? 1 : 0;
+  uint32_t sample_count_log2_y = msaa_samples >= MsaaSamples::k2X ? 1 : 0;
+  dirty |= system_constants_.sample_count_log2[0] != sample_count_log2_x;
+  dirty |= system_constants_.sample_count_log2[1] != sample_count_log2_y;
+  system_constants_.sample_count_log2[0] = sample_count_log2_x;
+  system_constants_.sample_count_log2[1] = sample_count_log2_y;
 
   // Alpha test.
   int32_t alpha_test;
@@ -1857,27 +1941,32 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
   dirty |= system_constants_.alpha_test != alpha_test;
   system_constants_.alpha_test = alpha_test;
 
-  // Color exponent bias and output index mapping or ROV writing.
-  uint32_t rb_color_mask = regs[XE_GPU_REG_RB_COLOR_MASK].u32;
-  bool colorcontrol_blend_enable =
-      (regs[XE_GPU_REG_RB_COLORCONTROL].u32 & 0x20) == 0;
+  // EDRAM pitch for ROV writing.
+  if (IsROVUsedForEDRAM()) {
+    uint32_t edram_pitch_tiles = ((std::min(rb_surface_info & 0x3FFFu, 2560u) *
+                                   (msaa_samples >= MsaaSamples::k4X ? 2 : 1)) +
+                                  79) /
+                                 80;
+    dirty |= system_constants_.edram_pitch_tiles != edram_pitch_tiles;
+    system_constants_.edram_pitch_tiles = edram_pitch_tiles;
+  }
+
+  // Color exponent bias and output index mapping or ROV render target writing.
+  bool colorcontrol_blend_enable = (rb_colorcontrol & 0x20) == 0;
   for (uint32_t i = 0; i < 4; ++i) {
-    uint32_t color_info, blend_control;
+    uint32_t color_info = color_infos[i];
+    uint32_t blend_control;
     switch (i) {
       case 1:
-        color_info = regs[XE_GPU_REG_RB_COLOR1_INFO].u32;
         blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_1].u32;
         break;
       case 2:
-        color_info = regs[XE_GPU_REG_RB_COLOR2_INFO].u32;
         blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_2].u32;
         break;
       case 3:
-        color_info = regs[XE_GPU_REG_RB_COLOR3_INFO].u32;
         blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_3].u32;
         break;
       default:
-        color_info = regs[XE_GPU_REG_RB_COLOR_INFO].u32;
         blend_control = regs[XE_GPU_REG_RB_BLENDCONTROL_0].u32;
     }
     // Exponent bias is in bits 20:25 of RB_COLOR_INFO.
@@ -1906,19 +1995,10 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
       uint32_t edram_base_dwords = (color_info & 0xFFF) * 1280;
       dirty |= system_constants_.edram_base_dwords[i] != edram_base_dwords;
       system_constants_.edram_base_dwords[i] = edram_base_dwords;
-      uint32_t edram_pitch_tiles =
-          ((std::min(rb_surface_info & 0x3FFFu, 2560u) *
-            (msaa_samples >= MsaaSamples::k4X ? 2 : 1)) +
-           79) /
-          80;
-      dirty |= system_constants_.edram_pitch_tiles != edram_pitch_tiles;
-      system_constants_.edram_pitch_tiles = edram_pitch_tiles;
-      uint32_t rt_flags =
-          DxbcShaderTranslator::GetColorFormatRTFlags(color_format);
-      // Exclude unused components from the write mask.
-      uint32_t rt_mask =
-          (rb_color_mask >> (i * 4)) & 0xF &
-          ~(rt_flags >> DxbcShaderTranslator::kRTFlag_FormatUnusedR_Shift);
+      uint32_t rt_flags = rov_color_format_rt_flags[i];
+      // Unused components already excluded from the write mask when color infos
+      // were obtained, and fully aliased render targets were already skipped.
+      uint32_t rt_mask = (color_mask >> (i * 4)) & 0xF;
       if (rt_mask != 0) {
         rt_flags |= rt_mask << DxbcShaderTranslator::kRTFlag_WriteR_Shift;
         uint32_t blend_x, blend_y;
@@ -1963,10 +2043,79 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
 
   // Depth/stencil testing and blend constant for ROV blending.
   if (IsROVUsedForEDRAM()) {
-    uint32_t depth_base_dwords =
-        (regs[XE_GPU_REG_RB_DEPTH_INFO].u32 & 0xFFF) * 1280;
+    uint32_t depth_base_dwords = (rb_depth_info & 0xFFF) * 1280;
     dirty |= system_constants_.edram_depth_base_dwords != depth_base_dwords;
     system_constants_.edram_depth_base_dwords = depth_base_dwords;
+
+    // The Z range is reversed in the vertex shader if it's reverse - use the
+    // absolute value of the scale.
+    float depth_range_scale = std::abs(viewport_scale_z);
+    dirty |= system_constants_.edram_depth_range_scale != depth_range_scale;
+    system_constants_.edram_depth_range_scale = depth_range_scale;
+    float depth_range_offset = (pa_cl_vte_cntl & (1 << 5))
+                                   ? regs[XE_GPU_REG_PA_CL_VPORT_ZOFFSET].f32
+                                   : 0.0f;
+    if (viewport_scale_z < 0.0f) {
+      // Similar to MinDepth in fixed-function viewport calculation.
+      depth_range_offset += viewport_scale_z;
+    }
+    dirty |= system_constants_.edram_depth_range_offset != depth_range_offset;
+    system_constants_.edram_depth_range_offset = depth_range_offset;
+
+    // For points and lines, front polygon offset is used, and it's enabled if
+    // POLY_OFFSET_PARA_ENABLED is set, for polygons, separate front and back
+    // are used.
+    float poly_offset_front_scale = 0.0f, poly_offset_front_offset = 0.0f;
+    float poly_offset_back_scale = 0.0f, poly_offset_back_offset = 0.0f;
+    if (primitive_type == PrimitiveType::kPointList ||
+        primitive_type == PrimitiveType::kLineList ||
+        primitive_type == PrimitiveType::kLineStrip ||
+        primitive_type == PrimitiveType::kLineLoop ||
+        primitive_type == PrimitiveType::k2DLineStrip) {
+      if (pa_su_sc_mode_cntl & (1 << 13)) {
+        poly_offset_front_scale =
+            regs[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE].f32;
+        poly_offset_front_offset =
+            regs[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET].f32;
+        poly_offset_back_scale = poly_offset_front_scale;
+        poly_offset_back_offset = poly_offset_front_offset;
+      }
+    } else {
+      if (pa_su_sc_mode_cntl & (1 << 11)) {
+        poly_offset_front_scale =
+            regs[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE].f32;
+        poly_offset_front_offset =
+            regs[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET].f32;
+      }
+      if (pa_su_sc_mode_cntl & (1 << 12)) {
+        poly_offset_back_scale =
+            regs[XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE].f32;
+        poly_offset_back_offset =
+            regs[XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET].f32;
+      }
+    }
+    if (viewport_scale_z < 0.0f) {
+      // Clip space flipped in the vertex shader, so flip polygon offset too.
+      poly_offset_front_scale = -poly_offset_front_scale;
+      poly_offset_front_offset = -poly_offset_front_offset;
+      poly_offset_back_scale = -poly_offset_back_scale;
+      poly_offset_back_offset = -poly_offset_back_offset;
+    }
+    // See PipelineCache for explanation.
+    poly_offset_front_scale *= 1.0f / 16.0f;
+    poly_offset_back_scale *= 1.0f / 16.0f;
+    dirty |= system_constants_.edram_poly_offset_front_scale !=
+             poly_offset_front_scale;
+    system_constants_.edram_poly_offset_front_scale = poly_offset_front_scale;
+    dirty |= system_constants_.edram_poly_offset_front_offset !=
+             poly_offset_front_offset;
+    system_constants_.edram_poly_offset_front_offset = poly_offset_front_offset;
+    dirty |= system_constants_.edram_poly_offset_back_scale !=
+             poly_offset_back_scale;
+    system_constants_.edram_poly_offset_back_scale = poly_offset_back_scale;
+    dirty |= system_constants_.edram_poly_offset_back_offset !=
+             poly_offset_back_offset;
+    system_constants_.edram_poly_offset_back_offset = poly_offset_back_offset;
 
     if (rb_depthcontrol & 0x1) {
       uint32_t stencil_value;

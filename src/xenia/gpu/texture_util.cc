@@ -54,9 +54,11 @@ void GetGuestMipBlocks(Dimension dimension, uint32_t width, uint32_t height,
   }
 }
 
-uint32_t GetGuestMipStorageSize(uint32_t width_blocks, uint32_t height_blocks,
-                                uint32_t depth_blocks, bool is_tiled,
-                                TextureFormat format, uint32_t* row_pitch_out) {
+uint32_t GetGuestMipSliceStorageSize(uint32_t width_blocks,
+                                     uint32_t height_blocks,
+                                     uint32_t depth_blocks, bool is_tiled,
+                                     TextureFormat format,
+                                     uint32_t* row_pitch_out) {
   const FormatInfo* format_info = FormatInfo::Get(format);
   uint32_t row_pitch = width_blocks * format_info->block_width *
                        format_info->block_height * format_info->bits_per_pixel /
@@ -160,6 +162,22 @@ bool GetPackedMipOffset(uint32_t width, uint32_t height, uint32_t depth,
   x_blocks /= format_info->block_width;
   y_blocks /= format_info->block_height;
   return true;
+}
+
+int32_t GetTiledOffset2D(int32_t x, int32_t y, uint32_t width,
+                         uint32_t log2_bpb) {
+  // https://github.com/gildor2/UModel/blob/de8fbd3bc922427ea056b7340202dcdcc19ccff5/Unreal/UnTexture.cpp#L489
+  width = xe::align(width, 32u);
+  // Top bits of coordinates.
+  int32_t macro = ((x >> 5) + (y >> 5) * (width >> 5)) << (log2_bpb + 7);
+  // Lower bits of coordinates (result is 6-bit value).
+  int32_t micro = ((x & 7) + ((y & 0xE) << 2)) << log2_bpb;
+  // Mix micro/macro + add few remaining x/y bits.
+  int32_t offset =
+      macro + ((micro & ~0xF) << 1) + (micro & 0xF) + ((y & 1) << 4);
+  // Mix bits again.
+  return ((offset & ~0x1FF) << 3) + ((y & 16) << 7) + ((offset & 0x1C0) << 2) +
+         (((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3F);
 }
 
 }  // namespace texture_util

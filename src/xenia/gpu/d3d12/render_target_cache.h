@@ -214,7 +214,7 @@ class D3D12CommandProcessor;
 //   not always present - D3DPT_RECTLIST is used very commonly, especially for
 //   clearing (Direct3D 9 Clear is implemented this way on the Xbox 360) and
 //   copying, and it's usually drawn without a viewport and with 8192x8192
-//   scissor), there may be cases of simulatenously bound render targets
+//   scissor), there may be cases of simultaneously bound render targets
 //   overlapping each other in the EDRAM in a way that is difficult to resolve,
 //   and stores/loads may destroy data.
 class RenderTargetCache {
@@ -337,10 +337,16 @@ class RenderTargetCache {
     D3D12_RESOURCE_STATES state;
     D3D12_CPU_DESCRIPTOR_HANDLE handle;
     RenderTargetKey key;
+#if 0
     // The first 4 MB page in the heaps.
     uint32_t heap_page_first;
     // The number of 4 MB pages this render target uses.
     uint32_t heap_page_count;
+#else
+    // Index of the render target when multiple render targets with the same key
+    // are bound simultaneously.
+    uint32_t instance;
+#endif
     // Color/depth and stencil layouts.
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprints[2];
     // Buffer size needed to copy the render target to the EDRAM buffer.
@@ -383,8 +389,10 @@ class RenderTargetCache {
     D3D12_RESOURCE_STATES state;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle;
     ResolveTargetKey key;
+#if 0
     // The first 4 MB page in the heaps.
     uint32_t heap_page_first;
+#endif
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
     // Buffer size needed to copy the resolve target to a linear buffer.
     uint32_t copy_buffer_size;
@@ -396,9 +404,11 @@ class RenderTargetCache {
 
   void ClearBindings();
 
+#if 0
   // Checks if the heap for the render target exists and tries to create it if
   // it's not.
   bool MakeHeapResident(uint32_t heap_index);
+#endif
 
   // Creates a new RTV/DSV descriptor heap if needed to be able to allocate one
   // descriptor in it.
@@ -407,8 +417,13 @@ class RenderTargetCache {
   // Returns true if a render target with such key can be created.
   static bool GetResourceDesc(RenderTargetKey key, D3D12_RESOURCE_DESC& desc);
 
+#if 0
   RenderTarget* FindOrCreateRenderTarget(RenderTargetKey key,
                                          uint32_t heap_page_first);
+#else
+  RenderTarget* FindOrCreateRenderTarget(RenderTargetKey key,
+                                         uint32_t instance);
+#endif
 
   // Calculates the tile layout for a rectangle on a render target of the given
   // configuration. The base is adjusted so it points to the tile containing the
@@ -443,7 +458,7 @@ class RenderTargetCache {
   bool ResolveCopy(SharedMemory* shared_memory, TextureCache* texture_cache,
                    uint32_t edram_base, uint32_t surface_pitch,
                    MsaaSamples msaa_samples, bool is_depth, uint32_t src_format,
-                   const D3D12_RECT& src_rect);
+                   const D3D12_RECT& rect);
   // Performs the clearing part of a resolve.
   bool ResolveClear(uint32_t edram_base, uint32_t surface_pitch,
                     MsaaSamples msaa_samples, bool is_depth, uint32_t format,
@@ -453,9 +468,14 @@ class RenderTargetCache {
   // Returns any available resolve target placed at least at
   // min_heap_first_page, or tries to place it at the specified position (if not
   // possible, will place it in the next heap).
+#if 0
   ResolveTarget* FindOrCreateResolveTarget(uint32_t width, uint32_t height,
                                            DXGI_FORMAT format,
                                            uint32_t min_heap_first_page);
+#else
+  ResolveTarget* FindOrCreateResolveTarget(uint32_t width, uint32_t height,
+                                           DXGI_FORMAT format);
+#endif
 
   D3D12CommandProcessor* command_processor_;
   RegisterFile* register_file_;
@@ -477,9 +497,11 @@ class RenderTargetCache {
         uint32_t rt_stencil_pitch;
       };
       struct {
-        // 16 bits for X, 16 bits for Y.
-        uint32_t tile_sample_rect_lt;
-        uint32_t tile_sample_rect_rb;
+        // 0:11 - resolve area width/height in pixels.
+        // 12:16 - offset in the destination texture (only up to 31 - assuming
+        //         32*n is pre-applied to the base pointer).
+        // 17: - left/top of the copied region (relative to EDRAM base).
+        uint32_t tile_sample_dimensions[2];
         uint32_t tile_sample_dest_base;
         // 0:13 - destination pitch.
         // 14 - log2(vertical sample count), 0 for 1x AA, 1 for 2x/4x AA.
@@ -527,6 +549,9 @@ class RenderTargetCache {
   ID3D12PipelineState* edram_clear_64bpp_pipeline_ = nullptr;
   ID3D12PipelineState* edram_clear_depth_float_pipeline_ = nullptr;
 
+  // FIXME(Triang3l): Investigate what's wrong with placed RTV/DSV aliasing on
+  // Nvidia Maxwell 1st generation and older.
+#if 0
   // 48 MB heaps backing used render targets resources, created when needed.
   // 24 MB proved to be not enough to store a single render target occupying the
   // entire EDRAM - a 32-bit depth/stencil one - at some resolution.
@@ -534,6 +559,7 @@ class RenderTargetCache {
   // into a k_32_32_32_32_FLOAT texture.
   ID3D12Heap* heaps_[5] = {};
   static constexpr uint32_t kHeap4MBPages = 12;
+#endif
 
   static constexpr uint32_t kRenderTargetDescriptorHeapSize = 2048;
   // Descriptor heap, for linear allocation of heaps and descriptors.
@@ -579,7 +605,11 @@ class RenderTargetCache {
     uint32_t resolve_info;
   };
   std::vector<ResolvePipeline> resolve_pipelines_;
+#if 0
   std::unordered_multimap<uint32_t, ResolveTarget*> resolve_targets_;
+#else
+  std::unordered_map<uint32_t, ResolveTarget*> resolve_targets_;
+#endif
 };
 
 }  // namespace d3d12

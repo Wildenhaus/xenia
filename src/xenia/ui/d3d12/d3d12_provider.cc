@@ -15,7 +15,7 @@
 #include "xenia/ui/d3d12/d3d12_context.h"
 
 DEFINE_bool(d3d12_debug, false, "Enable Direct3D 12 and DXGI debug layer.");
-DEFINE_int32(d3d12_adapter_index, -1,
+DEFINE_int32(d3d12_adapter, -1,
              "Index of the DXGI adapter to use. "
              "-1 for any physical adapter, -2 for WARP software rendering.");
 
@@ -34,7 +34,7 @@ std::unique_ptr<D3D12Provider> D3D12Provider::Create(Window* main_window) {
           "Ensure that you have the latest drivers for your GPU and it "
           "supports Direct3D 12 feature level 11_0.\n"
           "\n"
-          "See http://xenia.jp/faq/ for more information and a list of "
+          "See https://xenia.jp/faq/ for more information and a list of "
           "supported GPUs.");
     }
     return nullptr;
@@ -134,11 +134,11 @@ D3D12Provider::InitializationResult D3D12Provider::Initialize() {
     if (SUCCEEDED(adapter->GetDesc1(&adapter_desc))) {
       if (SUCCEEDED(pfn_d3d12_create_device_(adapter, D3D_FEATURE_LEVEL_11_0,
                                              _uuidof(ID3D12Device), nullptr))) {
-        if (FLAGS_d3d12_adapter_index >= 0) {
-          if (adapter_index == FLAGS_d3d12_adapter_index) {
+        if (FLAGS_d3d12_adapter >= 0) {
+          if (adapter_index == FLAGS_d3d12_adapter) {
             break;
           }
-        } else if (FLAGS_d3d12_adapter_index == -2) {
+        } else if (FLAGS_d3d12_adapter == -2) {
           if (adapter_desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
             break;
           }
@@ -212,11 +212,22 @@ D3D12Provider::InitializationResult D3D12Provider::Initialize() {
     programmable_sample_positions_tier_ =
         uint32_t(options2.ProgrammableSamplePositionsTier);
   }
-  XELOGD3D(
-      "Direct3D 12 device supports tiled resources tier %u, programmable "
-      "sample positions tier %u; rasterizer-ordered views %ssupported",
-      tiled_resources_tier_, programmable_sample_positions_tier_,
-      rasterizer_ordered_views_supported_ ? "" : "un");
+  virtual_address_bits_per_resource_ = 0;
+  D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT virtual_address_support;
+  if (SUCCEEDED(device->CheckFeatureSupport(
+          D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT, &virtual_address_support,
+          sizeof(virtual_address_support)))) {
+    virtual_address_bits_per_resource_ =
+        virtual_address_support.MaxGPUVirtualAddressBitsPerResource;
+  }
+  XELOGD3D("Direct3D 12 device features:");
+  XELOGD3D("* Max GPU virtual address bits per resource: %u",
+           virtual_address_bits_per_resource_);
+  XELOGD3D("* Programmable sample positions: tier %u",
+           programmable_sample_positions_tier_);
+  XELOGD3D("* Rasterizer-ordered views: %s",
+           rasterizer_ordered_views_supported_ ? "yes" : "no");
+  XELOGD3D("* Tiled resources: tier %u", tiled_resources_tier_);
 
   // Get the graphics analysis interface, will silently fail if PIX is not
   // attached.

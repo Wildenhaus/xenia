@@ -46,7 +46,9 @@ namespace d3d12 {
 #include "xenia/gpu/d3d12/shaders/dxbc/resolve_ps.h"
 #include "xenia/gpu/d3d12/shaders/dxbc/resolve_vs.h"
 
+#if 0
 constexpr uint32_t RenderTargetCache::kHeap4MBPages;
+#endif
 constexpr uint32_t RenderTargetCache::kRenderTargetDescriptorHeapSize;
 
 const RenderTargetCache::EDRAMLoadStoreModeInfo
@@ -139,6 +141,7 @@ bool RenderTargetCache::Initialize() {
     return false;
   }
   // Create the clear root signature (the same, but with the UAV only).
+  load_store_root_ranges[1].OffsetInDescriptorsFromTableStart = 0;
   load_store_root_parameters[1].DescriptorTable.NumDescriptorRanges = 1;
   ++load_store_root_parameters[1].DescriptorTable.pDescriptorRanges;
   edram_clear_root_signature_ =
@@ -325,12 +328,14 @@ void RenderTargetCache::ClearCache() {
     delete heap;
   }
 
+#if 0
   for (uint32_t i = 0; i < xe::countof(heaps_); ++i) {
     if (heaps_[i] != nullptr) {
       heaps_[i]->Release();
       heaps_[i] = nullptr;
     }
   }
+#endif
 }
 
 void RenderTargetCache::BeginFrame() {
@@ -613,7 +618,9 @@ bool RenderTargetCache::UpdateRenderTargets(const D3D12Shader* pixel_shader) {
 
   // Need to change the bindings.
   if (full_update || render_targets_to_attach) {
+#if 0
     uint32_t heap_usage[5] = {};
+#endif
     if (full_update) {
       // Export the currently bound render targets before we ruin the bindings.
       StoreRenderTargetsToEDRAM();
@@ -631,6 +638,7 @@ bool RenderTargetCache::UpdateRenderTargets(const D3D12Shader* pixel_shader) {
         }
       }
     } else {
+#if 0
       // If updating partially, only need to attach new render targets.
       for (uint32_t i = 0; i < 5; ++i) {
         const RenderTargetBinding& binding = current_bindings_[i];
@@ -642,9 +650,9 @@ bool RenderTargetCache::UpdateRenderTargets(const D3D12Shader* pixel_shader) {
           // There are no holes between 4 MB pages in each heap.
           heap_usage[render_target->heap_page_first / kHeap4MBPages] +=
               render_target->heap_page_count;
-          continue;
         }
       }
+#endif
     }
     XELOGGPU("RT Cache: %s update - pitch %u, samples %u, RTs to attach %u",
              full_update ? "Full" : "Partial", surface_pitch, msaa_samples,
@@ -676,6 +684,7 @@ bool RenderTargetCache::UpdateRenderTargets(const D3D12Shader* pixel_shader) {
         continue;
       }
 
+#if 0
       // Calculate the number of 4 MB pages of the heaps this RT will use.
       D3D12_RESOURCE_ALLOCATION_INFO allocation_info =
           device->GetResourceAllocationInfo(0, 1, &resource_desc);
@@ -710,6 +719,22 @@ bool RenderTargetCache::UpdateRenderTargets(const D3D12Shader* pixel_shader) {
       // Inform Direct3D that we're reusing the heap for this render target.
       command_processor_->PushAliasingBarrier(nullptr,
                                               binding.render_target->resource);
+#else
+      // If multiple render targets have the same format, assign different
+      // instance numbers to them.
+      uint32_t instance = 0;
+      if (i != 4) {
+        for (uint32_t j = 0; j < i; ++j) {
+          const RenderTargetBinding& other_binding = current_bindings_[j];
+          if (other_binding.is_bound &&
+              other_binding.render_target != nullptr &&
+              other_binding.format == formats[i]) {
+            ++instance;
+          }
+        }
+      }
+      binding.render_target = FindOrCreateRenderTarget(key, instance);
+#endif
     }
 
     // Sample positions when loading depth must match sample positions when
@@ -817,7 +842,10 @@ bool RenderTargetCache::Resolve(SharedMemory* shared_memory,
 
   // Get the render target properties.
   uint32_t rb_surface_info = regs[XE_GPU_REG_RB_SURFACE_INFO].u32;
-  uint32_t surface_pitch = rb_surface_info & 0x3FFF;
+  uint32_t surface_pitch = std::min(rb_surface_info & 0x3FFF, 2560u);
+  if (surface_pitch == 0) {
+    return true;
+  }
   MsaaSamples msaa_samples = MsaaSamples((rb_surface_info >> 16) & 0x3);
   uint32_t rb_copy_control = regs[XE_GPU_REG_RB_COPY_CONTROL].u32;
   // Depth info is always needed because color resolve may also clear depth.
@@ -866,26 +894,39 @@ bool RenderTargetCache::Resolve(SharedMemory* shared_memory,
   assert_true(fetch.size == 6);
   const uint8_t* src_vertex_address =
       memory->TranslatePhysical(fetch.address << 2);
-  float src_vertices[6];
+  float vertices[6];
   // Most vertices have a negative half pixel offset applied, which we reverse.
-  float src_vertex_offset =
+  float vertex_offset =
       (regs[XE_GPU_REG_PA_SU_VTX_CNTL].u32 & 0x1) ? 0.0f : 0.5f;
   for (uint32_t i = 0; i < 6; ++i) {
-    src_vertices[i] =
+    vertices[i] =
         xenos::GpuSwap(xe::load<float>(src_vertex_address + i * sizeof(float)),
                        Endian(fetch.endian)) +
-        src_vertex_offset;
+        vertex_offset;
   }
   // Xenos only supports rectangle copies (luckily).
-  D3D12_RECT src_rect;
-  src_rect.left = LONG(
-      std::min(std::min(src_vertices[0], src_vertices[2]), src_vertices[4]));
-  src_rect.right = LONG(
-      std::max(std::max(src_vertices[0], src_vertices[2]), src_vertices[4]));
-  src_rect.top = LONG(
-      std::min(std::min(src_vertices[1], src_vertices[3]), src_vertices[5]));
-  src_rect.bottom = LONG(
-      std::max(std::max(src_vertices[1], src_vertices[3]), src_vertices[5]));
+  // The rectangle is for both the source and the destination, according to how
+  // it's used in Tales of Vesperia.
+  // Window scissor must also be applied - in the jigsaw puzzle in Banjo-Tooie,
+  // there are 1280x720 resolve rectangles, but only the scissored 1280x256
+  // needs to be copied, otherwise it overflows even beyond the EDRAM, and the
+  // depth buffer is visible on the screen. It also ensures the coordinates are
+  // not negative (in F.E.A.R., for example, the right tile is resolved with
+  // vertices (-640,0)->(640,720), however, the destination texture pointer is
+  // adjusted properly to the right half of the texture, and the source render
+  // target has a pitch of 800).
+  D3D12_RECT rect;
+  rect.left = LONG(std::min(std::min(vertices[0], vertices[2]), vertices[4]));
+  rect.right = LONG(std::max(std::max(vertices[0], vertices[2]), vertices[4]));
+  rect.top = LONG(std::min(std::min(vertices[1], vertices[3]), vertices[5]));
+  rect.bottom = LONG(std::max(std::max(vertices[1], vertices[3]), vertices[5]));
+  D3D12_RECT scissor;
+  uint32_t window_scissor_tl = regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL].u32;
+  uint32_t window_scissor_br = regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR].u32;
+  scissor.left = LONG(window_scissor_tl & 0x7FFF);
+  scissor.right = LONG(window_scissor_br & 0x7FFF);
+  scissor.top = LONG((window_scissor_tl >> 16) & 0x7FFF);
+  scissor.bottom = LONG((window_scissor_br >> 16) & 0x7FFF);
   if (regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL].u32 & (1 << 16)) {
     uint32_t pa_sc_window_offset = regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET].u32;
     int16_t window_offset_x = pa_sc_window_offset & 0x7FFF;
@@ -896,36 +937,55 @@ bool RenderTargetCache::Resolve(SharedMemory* shared_memory,
     if (window_offset_y & 0x4000) {
       window_offset_y |= 0x8000;
     }
-    src_rect.left += window_offset_x;
-    src_rect.right += window_offset_x;
-    src_rect.top += window_offset_y;
-    src_rect.bottom += window_offset_y;
+    rect.left += window_offset_x;
+    rect.right += window_offset_x;
+    rect.top += window_offset_y;
+    rect.bottom += window_offset_y;
+    if (!(window_scissor_tl & (1u << 31))) {
+      scissor.left = std::max(LONG(scissor.left + window_offset_x), LONG(0));
+      scissor.right = std::max(LONG(scissor.right + window_offset_x), LONG(0));
+      scissor.top = std::max(LONG(scissor.top + window_offset_y), LONG(0));
+      scissor.bottom =
+          std::max(LONG(scissor.bottom + window_offset_y), LONG(0));
+    }
   }
+  rect.left = std::max(rect.left, scissor.left);
+  rect.right = std::min(rect.right, scissor.right);
+  rect.top = std::max(rect.top, scissor.top);
+  rect.bottom = std::min(rect.bottom, scissor.bottom);
 
   XELOGGPU(
       "Resolve: (%d,%d)->(%d,%d) of RT %u (pitch %u, %u sample%s, format %u) "
       "at %u",
-      src_rect.left, src_rect.top, src_rect.right, src_rect.bottom,
-      surface_index, surface_pitch, 1 << uint32_t(msaa_samples),
+      rect.left, rect.top, rect.right, rect.bottom, surface_index,
+      surface_pitch, 1 << uint32_t(msaa_samples),
       msaa_samples != MsaaSamples::k1X ? "s" : "", surface_format,
       surface_edram_base);
+
+  if (rect.left >= rect.right || rect.top >= rect.bottom) {
+    // Nothing to copy.
+    return true;
+  }
 
   if (command_processor_->IsROVUsedForEDRAM()) {
     // Commit ROV writes.
     command_processor_->PushUAVBarrier(edram_buffer_);
   }
 
+  // GetEDRAMLayout in ResolveCopy and ResolveClear will perform the needed
+  // clamping to the source render target size.
+
   bool result = ResolveCopy(shared_memory, texture_cache, surface_edram_base,
                             surface_pitch, msaa_samples, surface_is_depth,
-                            surface_format, src_rect);
+                            surface_format, rect);
   // Clear the color RT if needed.
   if (!surface_is_depth) {
     result &= ResolveClear(surface_edram_base, surface_pitch, msaa_samples,
-                           false, surface_format, src_rect);
+                           false, surface_format, rect);
   }
   // Clear the depth RT if needed (may be cleared alongside color).
   result &= ResolveClear(depth_edram_base, surface_pitch, msaa_samples, true,
-                         depth_format, src_rect);
+                         depth_format, rect);
   return result;
 }
 
@@ -934,7 +994,7 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
                                     uint32_t edram_base, uint32_t surface_pitch,
                                     MsaaSamples msaa_samples, bool is_depth,
                                     uint32_t src_format,
-                                    const D3D12_RECT& src_rect) {
+                                    const D3D12_RECT& rect) {
   auto& regs = *register_file_;
 
   uint32_t rb_copy_control = regs[XE_GPU_REG_RB_COPY_CONTROL].u32;
@@ -959,11 +1019,13 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
     // Nothing to copy.
     return true;
   }
-  D3D12_RECT copy_rect = src_rect;
-  copy_rect.right =
-      std::min(copy_rect.right, LONG(copy_rect.left + dest_pitch));
-  copy_rect.bottom =
-      std::min(copy_rect.bottom, LONG(copy_rect.top + dest_height));
+  D3D12_RECT copy_rect = rect;
+  copy_rect.right = std::min(copy_rect.right, LONG(dest_pitch));
+  copy_rect.bottom = std::min(copy_rect.bottom, LONG(dest_height));
+  if (copy_rect.left >= copy_rect.right || copy_rect.top >= copy_rect.bottom) {
+    // Nothing to copy.
+    return true;
+  }
 
   // Get format info.
   uint32_t dest_info = regs[XE_GPU_REG_RB_COPY_DEST_INFO].u32;
@@ -1033,7 +1095,7 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
     // resolve to 8bpp or 16bpp textures at very odd locations.
     return false;
   }
-  uint32_t dest_size = texture_util::GetGuestMipStorageSize(
+  uint32_t dest_size = texture_util::GetGuestMipSliceStorageSize(
       xe::align(dest_pitch, 32u), xe::align(dest_height, 32u), 1, true,
       dest_format, nullptr);
   if (dest_info & (1 << 3)) {
@@ -1051,6 +1113,8 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
 
   // Validate and clamp the source region, skip parts that don't need to be
   // copied and calculate the number of threads needed for copying/loading.
+  // copy_rect will be modified and will become only the source rectangle, for
+  // the destination offset, use the original rect from the arguments.
   uint32_t surface_pitch_tiles, row_width_ss_div_80, rows;
   if (!GetEDRAMLayout(surface_pitch, msaa_samples, src_64bpp, edram_base,
                       copy_rect, surface_pitch_tiles, row_width_ss_div_80,
@@ -1109,10 +1173,19 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
     // Dispatch the computation.
     command_list->SetComputeRootSignature(edram_load_store_root_signature_);
     EDRAMLoadStoreRootConstants root_constants;
-    root_constants.tile_sample_rect_lt = copy_rect.left | (copy_rect.top << 16);
-    root_constants.tile_sample_rect_rb =
-        copy_rect.right | (copy_rect.bottom << 16);
-    root_constants.tile_sample_dest_base = dest_address;
+    // Adjust the destination pointer so only 5 bits can be used for the
+    // destination offset (GetTiledOffset2D(32*n+m) == GetTiledOffset2D(32*n) +
+    // GetTiledOffset2D(m)).
+    root_constants.tile_sample_dimensions[0] =
+        uint32_t(copy_rect.right - copy_rect.left) |
+        ((uint32_t(rect.left) & 31) << 12) | (uint32_t(copy_rect.left) << 17);
+    root_constants.tile_sample_dimensions[1] =
+        uint32_t(copy_rect.bottom - copy_rect.top) |
+        ((uint32_t(rect.top) & 31) << 12) | (uint32_t(copy_rect.top) << 17);
+    root_constants.tile_sample_dest_base =
+        dest_address + texture_util::GetTiledOffset2D(int(rect.left),
+                                                      int(rect.top), dest_pitch,
+                                                      src_64bpp ? 3 : 2);
     assert_true(dest_pitch <= 8192);
     root_constants.tile_sample_dest_info = dest_pitch |
                                            (uint32_t(sample_select) << 16) |
@@ -1207,9 +1280,14 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
     uint32_t copy_width = copy_rect.right - copy_rect.left;
     uint32_t copy_height = copy_rect.bottom - copy_rect.top;
     // Resolve target for output merger format conversion.
+#if 0
     ResolveTarget* resolve_target =
         FindOrCreateResolveTarget(copy_width, copy_height, dest_dxgi_format,
                                   render_target->heap_page_count);
+#else
+    ResolveTarget* resolve_target =
+        FindOrCreateResolveTarget(copy_width, copy_height, dest_dxgi_format);
+#endif
     if (resolve_target == nullptr) {
       return false;
     }
@@ -1270,7 +1348,9 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
 
     // Copy the EDRAM buffer contents to the source texture.
 
+#if 0
     command_processor_->PushAliasingBarrier(nullptr, render_target->resource);
+#endif
     command_processor_->PushTransitionBarrier(copy_buffer, copy_buffer_state,
                                               D3D12_RESOURCE_STATE_COPY_SOURCE);
     copy_buffer_state = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -1292,7 +1372,9 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
     // Do the resolve. Render targets unbound already, safe to call
     // OMSetRenderTargets.
 
+#if 0
     command_processor_->PushAliasingBarrier(nullptr, resolve_target->resource);
+#endif
     command_processor_->PushTransitionBarrier(
         render_target->resource, render_target->state,
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1365,6 +1447,7 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
     rt_srv_desc.Format =
         GetColorDXGIFormat(ColorRenderTargetFormat(src_format));
     rt_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    UINT swizzle = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     if (dest_swap) {
       switch (ColorRenderTargetFormat(src_format)) {
         case ColorRenderTargetFormat::k_8_8_8_8:
@@ -1375,17 +1458,22 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
         case ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
         case ColorRenderTargetFormat::k_2_10_10_10_AS_16_16_16_16:
         case ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
-          rt_srv_desc.Shader4ComponentMapping =
-              D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(2, 1, 0, 3);
+          swizzle = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(2, 1, 0, 3);
           break;
         default:
-          rt_srv_desc.Shader4ComponentMapping =
-              D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+          break;
       }
-    } else {
-      rt_srv_desc.Shader4ComponentMapping =
-          D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     }
+    if (dest_format == TextureFormat::k_6_5_5) {
+      // Green bits of the resolve target used for blue, and blue bits used for
+      // green.
+      swizzle = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(
+          D3D12_DECODE_SHADER_4_COMPONENT_MAPPING(0, swizzle),
+          D3D12_DECODE_SHADER_4_COMPONENT_MAPPING(2, swizzle),
+          D3D12_DECODE_SHADER_4_COMPONENT_MAPPING(1, swizzle),
+          D3D12_DECODE_SHADER_4_COMPONENT_MAPPING(3, swizzle));
+    }
+    rt_srv_desc.Shader4ComponentMapping = swizzle;
     rt_srv_desc.Texture2D.MostDetailedMip = 0;
     rt_srv_desc.Texture2D.MipLevels = 1;
     rt_srv_desc.Texture2D.PlaneSlice = 0;
@@ -1415,6 +1503,10 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
     command_list->RSSetScissorRects(1, &scissor);
     command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     command_list->DrawInstanced(3, 1, 0, 0);
+    if (command_processor_->IsROVUsedForEDRAM()) {
+      // Clean up - the ROV path doesn't need render targets bound.
+      command_list->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
+    }
 
     // Copy the resolve target to the buffer.
 
@@ -1443,9 +1535,9 @@ bool RenderTargetCache::ResolveCopy(SharedMemory* shared_memory,
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     copy_buffer_state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     texture_cache->TileResolvedTexture(
-        dest_format, dest_address, dest_pitch, dest_height, copy_width,
-        copy_height, dest_endian, copy_buffer, resolve_target->copy_buffer_size,
-        resolve_target->footprint);
+        dest_format, dest_address, dest_pitch, dest_height, uint32_t(rect.left),
+        uint32_t(rect.top), copy_width, copy_height, dest_endian, copy_buffer,
+        resolve_target->copy_buffer_size, resolve_target->footprint);
 
     // Done with the copy buffer.
 
@@ -1508,7 +1600,8 @@ bool RenderTargetCache::ResolveClear(uint32_t edram_base,
                                  (clear_rect.bottom << (16 + samples_y_log2));
   root_constants.base_depth_pitch =
       edram_base | (is_depth ? (1 << 11) : 0) | (surface_pitch_tiles << 12);
-  if (is_depth &&
+  // When ROV is used, there's no 32-bit depth buffer.
+  if (!command_processor_->IsROVUsedForEDRAM() && is_depth &&
       DepthRenderTargetFormat(format) == DepthRenderTargetFormat::kD24FS8) {
     root_constants.clear_depth24 = regs[XE_GPU_REG_RB_DEPTH_CLEAR].u32;
     // 20e4 [0,2), based on CFloat24 from d3dref9.dll and on 6e4 in DirectXTex.
@@ -1594,9 +1687,17 @@ ID3D12PipelineState* RenderTargetCache::GetResolvePipeline(
 }
 
 RenderTargetCache::ResolveTarget* RenderTargetCache::FindOrCreateResolveTarget(
+#if 0
     uint32_t width, uint32_t height, DXGI_FORMAT format,
     uint32_t min_heap_page_first) {
+#else
+    uint32_t width, uint32_t height, DXGI_FORMAT format
+#endif
+) {
+#if 0
   assert_true(min_heap_page_first < kHeap4MBPages * 5);
+#endif
+
   if (width == 0 || height == 0 || width > 8192 || height > 8192) {
     assert_always();
     return nullptr;
@@ -1607,6 +1708,7 @@ RenderTargetCache::ResolveTarget* RenderTargetCache::FindOrCreateResolveTarget(
   key.format = format;
 
   // Try to find an existing target that isn't overlapping the resolve source.
+#if 0
   auto found_range = resolve_targets_.equal_range(key.value);
   for (auto iter = found_range.first; iter != found_range.second; ++iter) {
     ResolveTarget* found_resolve_target = iter->second;
@@ -1614,6 +1716,12 @@ RenderTargetCache::ResolveTarget* RenderTargetCache::FindOrCreateResolveTarget(
       return found_resolve_target;
     }
   }
+#else
+  auto found_iter = resolve_targets_.find(key.value);
+  if (found_iter != resolve_targets_.end()) {
+    return found_iter->second;
+  }
+#endif
 
   // Ensure the new resolve target can get an RTV descriptor.
   if (!EnsureRTVHeapAvailable(false)) {
@@ -1635,6 +1743,8 @@ RenderTargetCache::ResolveTarget* RenderTargetCache::FindOrCreateResolveTarget(
   resource_desc.SampleDesc.Quality = 0;
   resource_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
   resource_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+#if 0
   D3D12_RESOURCE_ALLOCATION_INFO allocation_info =
       device->GetResourceAllocationInfo(0, 1, &resource_desc);
   uint32_t heap_page_count =
@@ -1653,17 +1763,18 @@ RenderTargetCache::ResolveTarget* RenderTargetCache::FindOrCreateResolveTarget(
     min_heap_page_first = xe::round_up(min_heap_page_first, kHeap4MBPages);
     assert_true(min_heap_page_first < kHeap4MBPages * 5);
   }
-
   // Create the memory heap if it doesn't exist yet.
   uint32_t heap_index = min_heap_page_first / kHeap4MBPages;
   if (!MakeHeapResident(heap_index)) {
     return nullptr;
   }
+#endif
 
   // Create it.
   // The first action likely to be done is resolve.
   D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
   ID3D12Resource* resource;
+#if 0
   if (FAILED(device->CreatePlacedResource(
           heaps_[heap_index], (min_heap_page_first % kHeap4MBPages) << 22,
           &resource_desc, state, nullptr, IID_PPV_ARGS(&resource)))) {
@@ -1674,6 +1785,17 @@ RenderTargetCache::ResolveTarget* RenderTargetCache::FindOrCreateResolveTarget(
         min_heap_page_first, min_heap_page_first + heap_page_count - 1);
     return nullptr;
   }
+#else
+  if (FAILED(device->CreateCommittedResource(
+          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE,
+          &resource_desc, state, nullptr, IID_PPV_ARGS(&resource)))) {
+    XELOGE(
+        "Failed to create a committed resource for %ux%u resolve target with "
+        "DXGI format %u",
+        uint32_t(resource_desc.Width), resource_desc.Height, format);
+    return nullptr;
+  }
+#endif
 
   // Create the RTV.
   D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle =
@@ -1693,7 +1815,9 @@ RenderTargetCache::ResolveTarget* RenderTargetCache::FindOrCreateResolveTarget(
   resolve_target->state = state;
   resolve_target->rtv_handle.ptr = rtv_handle.ptr;
   resolve_target->key.value = key.value;
+#if 0
   resolve_target->heap_page_first = min_heap_page_first;
+#endif
   UINT64 copy_buffer_size;
   device->GetCopyableFootprints(&resource_desc, 0, 1, 0,
                                 &resolve_target->footprint, nullptr, nullptr,
@@ -1801,6 +1925,7 @@ void RenderTargetCache::ClearBindings() {
   std::memset(current_bindings_, 0, sizeof(current_bindings_));
 }
 
+#if 0
 bool RenderTargetCache::MakeHeapResident(uint32_t heap_index) {
   if (heap_index >= 5) {
     assert_always();
@@ -1825,6 +1950,7 @@ bool RenderTargetCache::MakeHeapResident(uint32_t heap_index) {
   }
   return true;
 }
+#endif
 
 bool RenderTargetCache::EnsureRTVHeapAvailable(bool is_depth) {
   auto& heap = is_depth ? descriptor_heaps_depth_ : descriptor_heaps_color_;
@@ -1884,16 +2010,29 @@ bool RenderTargetCache::GetResourceDesc(RenderTargetKey key,
 }
 
 RenderTargetCache::RenderTarget* RenderTargetCache::FindOrCreateRenderTarget(
-    RenderTargetKey key, uint32_t heap_page_first) {
+#if 0
+    RenderTargetKey key, uint32_t heap_page_first
+#else
+    RenderTargetKey key, uint32_t instance
+#endif
+) {
+#if 0
   assert_true(heap_page_first < kHeap4MBPages * 5);
+#endif
 
   // Try to find an existing render target.
   auto found_range = render_targets_.equal_range(key.value);
   for (auto iter = found_range.first; iter != found_range.second; ++iter) {
     RenderTarget* found_render_target = iter->second;
+#if 0
     if (found_render_target->heap_page_first == heap_page_first) {
       return found_render_target;
     }
+#else
+    if (found_render_target->instance == instance) {
+      return found_render_target;
+    }
+#endif
   }
 
   D3D12_RESOURCE_DESC resource_desc;
@@ -1904,6 +2043,7 @@ RenderTargetCache::RenderTarget* RenderTargetCache::FindOrCreateRenderTarget(
   auto provider = command_processor_->GetD3D12Context()->GetD3D12Provider();
   auto device = provider->GetDevice();
 
+#if 0
   // Get the number of heap pages needed for the render target.
   D3D12_RESOURCE_ALLOCATION_INFO allocation_info =
       device->GetResourceAllocationInfo(0, 1, &resource_desc);
@@ -1914,21 +2054,25 @@ RenderTargetCache::RenderTarget* RenderTargetCache::FindOrCreateRenderTarget(
     assert_always();
     return nullptr;
   }
+#endif
 
   // Ensure we can create a new descriptor in the render target heap.
   if (!EnsureRTVHeapAvailable(key.is_depth)) {
     return nullptr;
   }
 
+#if 0
   // Create the memory heap if it doesn't exist yet.
   uint32_t heap_index = heap_page_first / kHeap4MBPages;
   if (!MakeHeapResident(heap_index)) {
     return nullptr;
   }
+#endif
 
   // The first action likely to be done is EDRAM buffer load.
   D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
   ID3D12Resource* resource;
+#if 0
   if (FAILED(device->CreatePlacedResource(
           heaps_[heap_index], (heap_page_first % kHeap4MBPages) << 22,
           &resource_desc, state, nullptr, IID_PPV_ARGS(&resource)))) {
@@ -1940,6 +2084,18 @@ RenderTargetCache::RenderTarget* RenderTargetCache::FindOrCreateRenderTarget(
         heap_page_first + heap_page_count - 1);
     return nullptr;
   }
+#else
+  if (FAILED(device->CreateCommittedResource(
+          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE,
+          &resource_desc, state, nullptr, IID_PPV_ARGS(&resource)))) {
+    XELOGE(
+        "Failed to create a committed resource for %ux%u %s render target with "
+        "format %u",
+        uint32_t(resource_desc.Width), resource_desc.Height,
+        key.is_depth ? "depth" : "color", key.format);
+    return nullptr;
+  }
+#endif
 
   // Create the descriptor for the render target.
   D3D12_CPU_DESCRIPTOR_HANDLE descriptor_handle;
@@ -1973,19 +2129,29 @@ RenderTargetCache::RenderTarget* RenderTargetCache::FindOrCreateRenderTarget(
   render_target->state = state;
   render_target->handle = descriptor_handle;
   render_target->key = key;
+#if 0
   render_target->heap_page_first = heap_page_first;
   render_target->heap_page_count = heap_page_count;
+#else
+  render_target->instance = instance;
+#endif
   UINT64 copy_buffer_size;
   device->GetCopyableFootprints(&resource_desc, 0, key.is_depth ? 2 : 1, 0,
                                 render_target->footprints, nullptr, nullptr,
                                 &copy_buffer_size);
   render_target->copy_buffer_size = uint32_t(copy_buffer_size);
   render_targets_.insert(std::make_pair(key.value, render_target));
+#if 0
   XELOGGPU(
       "Created %ux%u %s render target with format %u at heap 4 MB pages %u:%u",
       uint32_t(resource_desc.Width), resource_desc.Height,
       key.is_depth ? "depth" : "color", key.format, heap_page_first,
       heap_page_first + heap_page_count - 1);
+#else
+  XELOGGPU("Created %ux%u %s render target with format %u",
+           uint32_t(resource_desc.Width), resource_desc.Height,
+           key.is_depth ? "depth" : "color", key.format);
+#endif
   return render_target;
 }
 
