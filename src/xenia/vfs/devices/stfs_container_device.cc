@@ -261,6 +261,9 @@ StfsContainerDevice::Error StfsContainerDevice::ReadSVOD() {
           "SVOD is not a single file, but the magic block was found at "
           "0xD000.");
     }
+  } else {
+    XELOGE("Could not locate SVOD magic block.");
+    return Error::kErrorReadError;
   }
 
   // Parse the root directory
@@ -441,10 +444,10 @@ void StfsContainerDevice::BlockToOffsetSVOD(size_t block, size_t* out_address,
 
   size_t block_address = (file_block * BLOCK_SIZE) + offset;
 
-  // If the offset causes the block address to overrun the file, round it
+  // If the offset causes the block address to overrun the file, round it.
   if (block_address >= MAX_FILE_SIZE) {
     file_index += 1;
-    block_address %= block_address;
+    block_address %= MAX_FILE_SIZE;
     block_address += 0x2000;
   }
 
