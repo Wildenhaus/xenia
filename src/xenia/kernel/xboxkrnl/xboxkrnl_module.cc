@@ -86,6 +86,7 @@ XboxkrnlModule::XboxkrnlModule(Emulator* emulator, KernelState* kernel_state)
   RegisterDebugExports(export_resolver_, kernel_state_);
   RegisterErrorExports(export_resolver_, kernel_state_);
   RegisterHalExports(export_resolver_, kernel_state_);
+  RegisterHidExports(export_resolver_, kernel_state_);
   RegisterIoExports(export_resolver_, kernel_state_);
   RegisterMemoryExports(export_resolver_, kernel_state_);
   RegisterMiscExports(export_resolver_, kernel_state_);
@@ -157,6 +158,14 @@ XboxkrnlModule::XboxkrnlModule(Emulator* emulator, KernelState* kernel_state)
   xe::store_and_swap<uint32_t>(lpXboxHardwareInfo + 0, 0);    // flags
   xe::store_and_swap<uint8_t>(lpXboxHardwareInfo + 4, 0x06);  // cpu count
   // Remaining 11b are zeroes?
+
+  // ExConsoleGameRegion, probably same values as keyvault region uses?
+  // Just return all 0xFF, should satisfy anything that checks it
+  uint32_t pExConsoleGameRegion = memory_->SystemHeapAlloc(4);
+  auto lpExConsoleGameRegion = memory_->TranslateVirtual(pExConsoleGameRegion);
+  export_resolver_->SetVariableMapping(
+      "xboxkrnl.exe", ordinals::ExConsoleGameRegion, pExConsoleGameRegion);
+  xe::store<uint32_t>(lpExConsoleGameRegion, 0xFFFFFFFF);
 
   // XexExecutableModuleHandle (?**)
   // Games try to dereference this to get a pointer to some module struct.

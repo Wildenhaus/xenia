@@ -9,12 +9,14 @@ project("xenia-app")
   language("C++")
   links({
     "capstone",
+    "dxbc",
     "gflags",
     "glew",
     "glslang-spirv",
     "imgui",
     "libavcodec",
     "libavutil",
+    "mspack",
     "snappy",
     "spirv-tools",
     "volk",
@@ -41,6 +43,8 @@ project("xenia-app")
     "WinMain",  -- Use WinMain instead of main.
   })
   defines({
+    "XBYAK_NO_OP_NAMES",
+    "XBYAK_ENABLE_OMITTED_OPERAND",
   })
   includedirs({
     project_root.."/third_party/gflags/src",
@@ -70,8 +74,10 @@ project("xenia-app")
   filter("platforms:Windows")
     links({
       "xenia-apu-xaudio2",
+      "xenia-gpu-d3d12",
       "xenia-hid-winkey",
       "xenia-hid-xinput",
+      "xenia-ui-d3d12",
     })
 
   filter("platforms:Windows")

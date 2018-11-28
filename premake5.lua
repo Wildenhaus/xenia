@@ -128,16 +128,17 @@ filter({"platforms:Linux", "toolset:gcc"})
   end
 
 filter({"platforms:Linux", "language:C++", "toolset:clang"})
-  buildoptions({
-    "-std=c++14",
-    "-stdlib=libstdc++",
-  })
   links({
     "c++",
     "c++abi"
   })
   disablewarnings({
     "deprecated-register"
+  })
+filter({"platforms:Linux", "language:C++", "toolset:clang", "files:*.cc or *.cpp"})
+  buildoptions({
+    "-std=c++14",
+    "-stdlib=libstdc++",
   })
 
 filter("platforms:Windows")
@@ -174,12 +175,12 @@ filter("platforms:Windows")
     "wsock32",
     "ws2_32",
     "xinput",
-    "xaudio2",
     "glu32",
     "opengl32",
     "comctl32",
     "shcore",
     "shlwapi",
+    "dxguid",
   })
 
 -- Create scratch/ path and dummy flags file if needed.
@@ -219,16 +220,21 @@ solution("xenia")
     platforms({"Linux"})
   elseif os.is("windows") then
     platforms({"Windows"})
+    -- Minimum version to support ID3D12GraphicsCommandList1 (for
+    -- SetSamplePositions).
+    systemversion("10.0.15063.0")
   end
   configurations({"Checked", "Debug", "Release"})
 
   -- Include third party files first so they don't have to deal with gflags.
   include("third_party/capstone.lua")
+  include("third_party/dxbc.lua")
   include("third_party/gflags.lua")
   include("third_party/glew.lua")
   include("third_party/glslang-spirv.lua")
   include("third_party/imgui.lua")
   include("third_party/libav.lua")
+  include("third_party/mspack.lua")
   include("third_party/snappy.lua")
   include("third_party/spirv-tools.lua")
   include("third_party/volk.lua")
@@ -256,6 +262,8 @@ solution("xenia")
 
   if os.is("windows") then
     include("src/xenia/apu/xaudio2")
+    include("src/xenia/gpu/d3d12")
     include("src/xenia/hid/winkey")
     include("src/xenia/hid/xinput")
+    include("src/xenia/ui/d3d12")
   end
