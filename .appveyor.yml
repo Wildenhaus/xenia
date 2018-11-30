@@ -57,7 +57,8 @@ environment:
 
 # scripts that run after cloning repository
 install:
-  - cmd: set PATH=C:\Program Files (x86)\MSBuild\14.0\Bin;%QT_DIR%\bin;C:\MinGW\bin;%PATH%
+  - cmd: dir C:\QT\5.11.2
+  - cmd: set PATH=C:\Program Files (x86)\MSBuild\14.0\Bin;%PATH%
   - cmd: xb.bat setup
 
 
