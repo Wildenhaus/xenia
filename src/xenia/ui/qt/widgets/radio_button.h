@@ -10,6 +10,11 @@ namespace qt {
 
 class XRadioButton : public Themeable<QRadioButton> {
   Q_OBJECT
+
+  Q_PROPERTY(QColor border_color READ border_color WRITE set_border_color);
+  Q_PROPERTY(QColor focus_color READ focus_color WRITE set_focus_color);
+  Q_PROPERTY(QColor checked_color READ checked_color WRITE set_checked_color);
+
  public:
   explicit XRadioButton(QWidget* parent = nullptr);
 
@@ -18,6 +23,8 @@ class XRadioButton : public Themeable<QRadioButton> {
 
   const QColor& border_color() const { return border_color_; }
   void set_border_color(const QColor& color) { border_color_ = color; }
+  const QColor& focus_color() const { return focus_color_; }
+  void set_focus_color(const QColor& color) { focus_color_ = color; }
   const QColor& checked_color() const { return checked_color_; }
   void set_checked_color(const QColor& color) { checked_color_ = color; }
 
@@ -26,10 +33,9 @@ class XRadioButton : public Themeable<QRadioButton> {
   QSize sizeHint() const override;
 
  private:
-  void Update();
-
   double label_indent_ = 8.0;
   QColor border_color_;
+  QColor focus_color_;
   QColor checked_color_;
 };
 

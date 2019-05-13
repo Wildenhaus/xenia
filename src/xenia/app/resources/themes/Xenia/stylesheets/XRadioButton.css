@@ -1,0 +1,5 @@
+QRadioButton#XRadioButton {
+  qproperty-border_color: $light2;
+  qproperty-focus_color: $secondary;
+  qproperty-checked_color: $secondary;
+}

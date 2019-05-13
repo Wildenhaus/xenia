@@ -9,29 +9,9 @@ namespace ui {
 namespace qt {
 
 XRadioButton::XRadioButton(QWidget* parent)
-    : Themeable<QRadioButton>("XRadioButton", parent) {
-  Update();
-}
-
-void XRadioButton::Update() {
-  // Load colors from the current theme file.
-  // Loading colors from the theme directly is not an ideal situation as the
-  // component will ignore CSS theming.
-  // This should also be updated in paintEvent() as a theme change would not be
-  // updated for this component otherwise.
-  const Theme& theme = ThemeManager::Instance().current_theme();
-
-  if (!border_color_.isValid()) {
-    border_color_ = theme.ColorForKey("light2");
-  }
-  if (!checked_color_.isValid()) {
-    checked_color_ = theme.ColorForKey("secondary");
-  }
-}
+    : Themeable<QRadioButton>("XRadioButton", parent) {}
 
 void XRadioButton::paintEvent(QPaintEvent* e) {
-  Update();
-
   QStyleOptionButton option;
   initStyleOption(&option);
 
@@ -45,7 +25,9 @@ void XRadioButton::paintEvent(QPaintEvent* e) {
   QRect label_rect = style()->proxy()->subElementRect(
       QStyle::SE_RadioButtonContents, &option, this);
 
-  QFontMetrics metrics(font());
+  QFont font = this->font();
+
+  QFontMetrics metrics(font);
   QRect font_rect = metrics.boundingRect(text());
 
   // TODO(Razzile): I can't seem to work out why this -1 is needed. I think the
@@ -58,6 +40,12 @@ void XRadioButton::paintEvent(QPaintEvent* e) {
   painter.setRenderHints(QPainter::Antialiasing);
 
   QPen pen(border_color_);
+
+  if (hasFocus()) {
+    pen.setColor(focus_color_);
+  }
+  painter.setFont(font);
+
   pen.setJoinStyle(Qt::MiterJoin);
   painter.setPen(pen);
 
