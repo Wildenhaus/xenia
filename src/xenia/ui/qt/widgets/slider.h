@@ -17,6 +17,8 @@ class XSlider : public Themeable<QSlider> {
                    QWidget* parent = nullptr);
 
  private:
+  void mouseReleaseEvent(QMouseEvent* e) override;
+
   double bar_size_ = 3;
   double bar_radius_ = 3;
   double slider_radius_ = 5;
