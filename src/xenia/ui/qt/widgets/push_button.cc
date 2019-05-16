@@ -23,6 +23,7 @@ XPushButton::XPushButton(const QIcon& icon, const QString& text,
 void XPushButton::Build() {
   setFlat(true);
   setCursor(Qt::PointingHandCursor);
+  setFocusPolicy(Qt::TabFocus);
 }
 
 }  // namespace qt
