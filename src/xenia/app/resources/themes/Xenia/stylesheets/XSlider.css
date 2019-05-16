@@ -1,3 +1,8 @@
+QSlider#XSlider:horizontal {
+  min-width: 20px;
+  min-height: 20px;
+}
+
 QSlider#XSlider::groove:horizontal {
   background: $secondaryDark;
   height: 4px;
@@ -13,6 +18,8 @@ QSlider#XSlider::handle:horizontal {
 
 QSlider#XSlider::handle:horizontal:focus {
   width: 14px;
+  height: 14px;
+  line-height: 14px;
   border-radius: 7px;
   background: $secondary;
   margin: -5px -1px -5px -1px;
