@@ -1,23 +1,23 @@
 QMainWindow {
-    background-color: $background;
-} 
+  background-color: $background;
+}
 
 QLabel#buildLabel {
-    color: $light2;
-    padding: 0px 4px 0px 4px;
-    font-size: 10px;
+  color: $light2;
+  padding: 0px 4px 0px 4px;
+  font-size: 10px;
 }
 
 QMenu {
-    background-color: $dark1;
-    border: 1px solid $light3;
+  background-color: $dark1;
+  border: 1px solid $light3;
 }
 
 QMenu::item {
-    background-color: transparent;
-    color: $primary;
+  background-color: transparent;
+  color: $primary;
 }
 
 QMenu::item:selected {
-    background-color: $secondaryDark;
+  background-color: $secondaryDark;
 }
