@@ -2,6 +2,7 @@ QToolButton#XDropdownButton {
   background: $dark1;
   color: $primary;
   border: 2px solid $light3;
+  padding: 4px;
 }
 
 QToolButton#XDropdownButton:disabled {

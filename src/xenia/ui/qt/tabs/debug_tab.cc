@@ -250,10 +250,10 @@ QWidget* DebugTab::CreateButtonGroup() {
   QSize btn_size(120, 40);
 
   XPushButton* pushbtn1 = new XPushButton("Push Button");
-  pushbtn1->setFixedSize(btn_size);
+  pushbtn1->setMinimumSize(btn_size);
   XPushButton* pushbtn2 = new XPushButton("Disabled");
   pushbtn2->setDisabled(true);
-  pushbtn2->setFixedSize(btn_size);
+  pushbtn2->setMinimumSize(btn_size);
 
   pushbtn_layout->addWidget(pushbtn1);
   pushbtn_layout->addWidget(pushbtn2);
@@ -275,11 +275,11 @@ QWidget* DebugTab::CreateButtonGroup() {
   menu->addAction("Close");
 
   XDropdownButton* dropdown_btn = new XDropdownButton("Dropdown Button", menu);
-  dropdown_btn->setFixedSize(btn_size);
+  dropdown_btn->setMinimumSize(btn_size);
 
   XDropdownButton* dropdown_btn_disabled = new XDropdownButton("Disabled");
   dropdown_btn_disabled->setDisabled(true);
-  dropdown_btn_disabled->setFixedSize(btn_size);
+  dropdown_btn_disabled->setMinimumSize(btn_size);
 
   dropdown_btn_layout->addWidget(dropdown_btn);
   dropdown_btn_layout->addWidget(dropdown_btn_disabled);
