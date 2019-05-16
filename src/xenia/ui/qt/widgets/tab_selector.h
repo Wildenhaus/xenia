@@ -90,8 +90,8 @@ class XTabSelector : public Themeable<QWidget> {
   void SetTabIndex(int tab_index);
 
  protected:
-  void mousePressEvent(QMouseEvent* event);
-  void paintEvent(QPaintEvent*);
+  void mousePressEvent(QMouseEvent* event) override;
+  void paintEvent(QPaintEvent*) override;
 
  private:
   void Build();
