@@ -9,7 +9,9 @@ namespace ui {
 namespace qt {
 
 XRadioButton::XRadioButton(QWidget* parent)
-    : Themeable<QRadioButton>("XRadioButton", parent) {}
+    : Themeable<QRadioButton>("XRadioButton", parent) {
+  setFocusPolicy(Qt::TabFocus);  // disable retaining focus through mouse click
+}
 
 void XRadioButton::paintEvent(QPaintEvent* e) {
   QStyleOptionButton option;

@@ -9,7 +9,9 @@ namespace ui {
 namespace qt {
 
 XCheckBox::XCheckBox(QWidget* parent)
-    : Themeable<QCheckBox>("XCheckBox", parent) {}
+    : Themeable<QCheckBox>("XCheckBox", parent) {
+  setFocusPolicy(Qt::TabFocus);  // disable retaining focus through mouse click
+}
 
 void XCheckBox::paintEvent(QPaintEvent* e) {
   QStyleOptionButton option;
