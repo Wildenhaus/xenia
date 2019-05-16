@@ -382,6 +382,7 @@ QWidget* DebugTab::CreateCheckboxGroup() {
   checkbox1->setText("Test Checkbox");
 
   XCheckBox* checkbox2 = new XCheckBox();
+  checkbox2->set_custom(true);
   checkbox2->set_checked_color(QColor(255, 150, 100));
   checkbox2->setText("Alternate Color");
 
@@ -440,10 +441,12 @@ QWidget* DebugTab::CreateRadioButtonGroup() {
 
   XRadioButton* radio3 = new XRadioButton();
   radio3->setText("Radio Button with really long text to test truncation");
+  radio3->set_custom(true);
   radio3->set_checked_color(QColor(255, 150, 100));
 
   XRadioButton* radio4 = new XRadioButton();
   radio4->setText("Error");
+  radio4->set_custom(true);
   radio4->set_checked_color(QColor(255, 0, 0));
 
   layer_2_layout->addWidget(radio3);
