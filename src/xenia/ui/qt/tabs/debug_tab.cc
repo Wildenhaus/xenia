@@ -208,7 +208,19 @@ QWidget* DebugTab::CreateNavigationTab() {
 }
 QWidget* DebugTab::CreateThemeTab() {
   QWidget* w = new QWidget();
-  w->setStyleSheet("background: green;");
+  w->setStyleSheet("background: #505050");
+  QVBoxLayout* layout = new QVBoxLayout(w);
+  layout->setContentsMargins(64, 64, 64, 64);
+  ThemeManager& theme_manager = ThemeManager::Instance();
+  Theme& theme = theme_manager.current_theme();
+
+  QLabel* label = new QLabel(
+      QStringLiteral("Current Theme: %1\n Description: %2\n Path: %3")
+          .arg(theme.config().name(), theme.config().description(),
+               theme.directory()));
+
+  layout->addWidget(label);
+
   return w;
 }
 QWidget* DebugTab::CreateLibraryTab() {
