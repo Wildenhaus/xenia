@@ -53,8 +53,7 @@ void DebugTab::Build() {
 void DebugTab::BuildSidebar() {
   sidebar_container_ = new QWidget(this);
   sidebar_container_->setObjectName("sidebarContainer");
-  sidebar_container_->setStyleSheet(
-      "background: #232323; min-width: 300px; max-width: 300px;");
+
   QVBoxLayout* sidebar_layout = new QVBoxLayout;
   sidebar_layout->setMargin(0);
   sidebar_layout->setSpacing(0);
@@ -90,16 +89,11 @@ void DebugTab::BuildSidebar() {
   // Title labels
   QLabel* xenia_title = new QLabel("Debug");
   xenia_title->setObjectName("sidebarTitleLabel");
-  xenia_title->setStyleSheet(
-      "color: #FFF;"
-      "font-size: 32px; "
-      "font-weight: normal;");
   xenia_title->setAlignment(Qt::AlignCenter);
   title_layout->addWidget(xenia_title, 0, Qt::AlignCenter);
 
   // Title separator
   auto separator = new XSeparator;
-  separator->setStyleSheet("background: #505050");
   title_layout->addSpacing(32);
   title_layout->addWidget(separator, 0, Qt::AlignCenter);
 
@@ -160,12 +154,12 @@ QWidget* DebugTab::CreateNavigationTab() {
   layout->setContentsMargins(64, 64, 64, 64);
 
   QWidget* container = new QWidget();
+  container->setObjectName("navigationContainer");
   container->setFixedSize(640, 480);
   QVBoxLayout* container_layout = new QVBoxLayout(container);
   container_layout->setSpacing(4);
   container_layout->setContentsMargins(0, 0, 0, 0);
   container->setLayout(container_layout);
-  container->setStyleSheet("background:#373737");
 
   XTab *tab1 = new XTab("Tab1"), *tab2 = new XTab("Tab2"),
        *tab3 = new XTab("Tab3");
@@ -225,7 +219,6 @@ QWidget* DebugTab::CreateLibraryTab() {
 
 QWidget* DebugTab::CreateButtonGroup() {
   QWidget* group = new QWidget();
-  group->setStyleSheet("QLabel { color:white; }");
 
   QVBoxLayout* group_layout = new QVBoxLayout();
   group_layout->setContentsMargins(32, 0, 32, 0);
@@ -293,8 +286,6 @@ QWidget* DebugTab::CreateButtonGroup() {
 
 QWidget* DebugTab::CreateSliderGroup() {
   QWidget* group = new QWidget();
-  group->setStyleSheet("QLabel { color: white }");
-
   QVBoxLayout* group_layout = new QVBoxLayout();
   group_layout->setContentsMargins(32, 0, 32, 0);
   group_layout->setSpacing(16);

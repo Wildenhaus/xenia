@@ -26,5 +26,6 @@
         <file>resources/themes/Xenia/stylesheets/XDropdownButton.css</file>
         <file>resources/themes/Xenia/stylesheets/XRadioButton.css</file>
         <file>resources/themes/Xenia/stylesheets/XCheckBox.css</file>
+        <file>resources/themes/Xenia/stylesheets/DebugTab.css</file>
     </qresource>
 </RCC>
