@@ -6,6 +6,7 @@
 #include <QMenu>
 
 #include "xenia/ui/qt/widgets/checkbox.h"
+#include "xenia/ui/qt/widgets/combobox.h"
 #include "xenia/ui/qt/widgets/dropdown_button.h"
 #include "xenia/ui/qt/widgets/groupbox.h"
 #include "xenia/ui/qt/widgets/push_button.h"
@@ -293,6 +294,39 @@ QWidget* DebugTab::CreateButtonGroup() {
 
   groupbox_layout->addLayout(dropdown_btn_layout);
 
+  QLabel* combobox_label = new QLabel("Combo Boxes");
+  groupbox_layout->addWidget(combobox_label);
+
+  QHBoxLayout* combobox_layout = new QHBoxLayout();
+  combobox_layout->setSpacing(32);
+  combobox_layout->setContentsMargins(0, 0, 0, 0);
+
+  QSize combobox_size = QSize(120, 32);
+
+  XComboBox* combobox1 = new XComboBox();
+  combobox1->setMinimumSize(combobox_size);
+
+  combobox1->addItem("Simple String 1");
+  combobox1->addItem("Simple String 2");
+
+  combobox_layout->addWidget(combobox1);
+
+  XComboBox* combobox2 = new XComboBox();
+  combobox2->setMinimumSize(combobox_size);
+
+  QAction* action1 = new QAction("Action 1");
+  QAction* action2 = new QAction("Action 2");
+
+  combobox2->addItem(action1->text(), QVariant::fromValue(action1));
+  combobox2->addItem(action2->text(), QVariant::fromValue(action2));
+
+  combobox2->addAction(action2);
+  combobox_layout->addWidget(combobox2);
+
+  combobox_layout->addStretch();
+
+  groupbox_layout->addLayout(combobox_layout);
+
   return group;
 }
 
@@ -479,7 +513,7 @@ QWidget* DebugTab::CreateTab1Widget(XTabSelector* tab_selector,
   layout->setContentsMargins(16, 16, 16, 16);
 
   XPushButton* changeTabButton = new XPushButton("Go to Tab 2");
-  changeTabButton->setFixedSize(100, 24);
+  changeTabButton->setMinimumSize(100, 24);
   connect(changeTabButton, &QPushButton::clicked, [=]() {
     tab_selector->SetTabIndex(1);
     tab_stack_layout->setCurrentIndex(1);
