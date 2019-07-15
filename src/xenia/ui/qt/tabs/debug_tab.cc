@@ -4,6 +4,7 @@
 #include <QGraphicsEffect>
 #include <QHBoxLayout>
 #include <QMenu>
+#include <QScrollArea>
 
 #include "xenia/ui/qt/widgets/checkbox.h"
 #include "xenia/ui/qt/widgets/combobox.h"
@@ -42,13 +43,22 @@ void DebugTab::Build() {
   layout_->setSpacing(0);
   setLayout(layout_);
 
-  content_layout_ = new QStackedLayout();
+  BuildSidebar();
+
+  content_widget_ = new QStackedWidget();
+
+  QScrollArea* scroll_area = new QScrollArea(this);
+  scroll_area->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  /*scroll_area->viewport()->setBackgroundRole(QPalette::Dark);
+  scroll_area->viewport()->setAutoFillBackground(true);*/
+  scroll_area->setWidget(content_widget_);
+  scroll_area->setWidgetResizable(true);
+
   for (const SidebarItem& item : sidebar_items_) {
-    content_layout_->addWidget(item.widget);
+    content_widget_->addWidget(item.widget);
   }
 
-  BuildSidebar();
-  layout_->addLayout(content_layout_);
+  layout_->addWidget(scroll_area);
 }
 
 void DebugTab::BuildSidebar() {
@@ -121,7 +131,7 @@ void DebugTab::BuildSidebar() {
 
     // link up the clicked signal
     connect(btn, &XSideBarButton::clicked,
-            [&]() { content_layout_->setCurrentWidget(item.widget); });
+            [&]() { content_widget_->setCurrentWidget(item.widget); });
   }
 
   sidebar_layout->addWidget(sidebar_, 0, Qt::AlignHCenter | Qt::AlignTop);
@@ -133,6 +143,8 @@ void DebugTab::BuildSidebar() {
 
 QWidget* DebugTab::CreateComponentsTab() {
   QWidget* w = new QWidget();
+  w->setSizePolicy(QSizePolicy::MinimumExpanding,
+                   QSizePolicy::MinimumExpanding);
   QVBoxLayout* layout = new QVBoxLayout();
   w->setLayout(layout);
 

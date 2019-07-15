@@ -6,6 +6,7 @@
 
 #include <QHBoxLayout>
 #include <QStackedLayout>
+#include <QStackedWidget>
 
 #include "xenia/ui/qt/widgets/sidebar.h"
 #include "xenia/ui/qt/widgets/tab.h"
@@ -55,7 +56,7 @@ class DebugTab : public XTab {
   QHBoxLayout* layout_ = nullptr;
   QWidget* sidebar_container_ = nullptr;
   XSideBar* sidebar_ = nullptr;
-  QStackedLayout* content_layout_ = nullptr;
+  QStackedWidget* content_widget_ = nullptr;
   QList<SidebarItem> sidebar_items_;
 };
 

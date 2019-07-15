@@ -2,6 +2,14 @@ QWidget#DebugTab QLabel {
   color: $primary;
 }
 
+QWidget#DebugTab QScrollArea { 
+  background: transparent; 
+  border: none;
+}
+QWidget#DebugTab QScrollArea > QWidget > QWidget { 
+  background: transparent; 
+}
+
 QWidget#sidebarContainer {
   background: $tertiary;
   min-width: 300px;
