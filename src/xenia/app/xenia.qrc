@@ -29,5 +29,8 @@
         <file>resources/themes/Xenia/stylesheets/DebugTab.css</file>
         <file>resources/themes/Xenia/stylesheets/XComboBox.css</file>
         <file>resources/graphics/down-arrow.png</file>
+        <file>resources/graphics/left-arrow.png</file>
+        <file>resources/graphics/right-arrow.png</file>
+        <file>resources/graphics/up-arrow.png</file>
     </qresource>
 </RCC>
