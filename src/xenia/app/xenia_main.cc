@@ -30,6 +30,8 @@ Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin);
 
 DEFINE_bool(mount_scratch, false, "Enable scratch mount");
 DEFINE_bool(mount_cache, false, "Enable cache mount");
+DEFINE_bool(show_debug_tab, true, "Show the debug tab in the Qt UI");
+DEFINE_string(library_path, "", "Path to search for games");
 
 namespace xe {
 namespace app {
@@ -39,7 +41,8 @@ int xenia_main(const std::vector<std::wstring>& args) {
   Profiler::ThreadEnter("main");*/
 
   // auto emulator = std::make_unique<xe::Emulator>(L"");
-  auto lib = XGameLibrary::Instance();
+  XGameLibrary* lib = XGameLibrary::Instance();
+  lib->add_path(xe::to_wstring(FLAGS_library_path));
   lib->scan_paths();
 
   // Start Qt

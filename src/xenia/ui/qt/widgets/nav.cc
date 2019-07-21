@@ -1,10 +1,14 @@
 #include "xenia/ui/qt/widgets/nav.h"
+
+#include <gflags/gflags.h>
+#include <QLabel>
+
 #include "xenia/ui/qt/tabs/debug_tab.h"
 #include "xenia/ui/qt/tabs/home_tab.h"
 #include "xenia/ui/qt/tabs/library_tab.h"
 #include "xenia/ui/qt/widgets/tab.h"
 
-#include <QLabel>
+DECLARE_bool(show_debug_tab);
 
 namespace xe {
 namespace ui {
@@ -40,15 +44,14 @@ void XNav::BuildTabs() {
   // TODO(Wildenhaus): Define tabs in shell?
   // (Razzile): Probably better to move to main window
   // and keep widgets/ for reusable components
+  std::vector<XTab*> tabs;
+  if (FLAGS_show_debug_tab) {
+    tabs = {new HomeTab(), new LibraryTab(), new XTab("Settings"),
+            new DebugTab()};
+  } else {
+    tabs = {new HomeTab(), new LibraryTab(), new XTab("Settings")};
+  }
 
-#ifdef DEBUG
-  std::vector<XTab*> tabs{new HomeTab(), new LibraryTab(), new XTab("Settings"),
-                          new DebugTab()};
-#else
-  std::vector<XTab*> tabs{new HomeTab(), new LibraryTab(),
-                          new XTab("Settings")};
-
-#endif
   tab_selector_ = new XTabSelector(tabs);
   tab_selector_->setCursor(Qt::PointingHandCursor);
   layout_->addWidget(tab_selector_);
