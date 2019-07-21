@@ -2,6 +2,10 @@
     <qresource prefix="/">
         <file>resources/graphics/icon.ico</file>
         <file>resources/graphics/GameIconMask.png</file>
+        <file>resources/graphics/down-arrow.png</file>
+        <file>resources/graphics/left-arrow.png</file>
+        <file>resources/graphics/right-arrow.png</file>
+        <file>resources/graphics/up-arrow.png</file>
         <file>resources/fonts/SegMDL2.ttf</file>
         <file>resources/fonts/segoeui.ttf</file>
         <file>resources/fonts/segoeuisb.ttf</file>
@@ -28,9 +32,7 @@
         <file>resources/themes/Xenia/stylesheets/XCheckBox.css</file>
         <file>resources/themes/Xenia/stylesheets/DebugTab.css</file>
         <file>resources/themes/Xenia/stylesheets/XComboBox.css</file>
-        <file>resources/graphics/down-arrow.png</file>
-        <file>resources/graphics/left-arrow.png</file>
-        <file>resources/graphics/right-arrow.png</file>
-        <file>resources/graphics/up-arrow.png</file>
+        <file>resources/themes/Xenia/stylesheets/XTextEdit.css</file>
+        <file>resources/themes/Xenia/stylesheets/XLineEdit.css</file>
     </qresource>
 </RCC>
