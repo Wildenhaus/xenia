@@ -10,13 +10,13 @@
 #include "xenia/ui/qt/widgets/combobox.h"
 #include "xenia/ui/qt/widgets/dropdown_button.h"
 #include "xenia/ui/qt/widgets/groupbox.h"
+#include "xenia/ui/qt/widgets/line_edit.h"
 #include "xenia/ui/qt/widgets/push_button.h"
 #include "xenia/ui/qt/widgets/radio_button.h"
 #include "xenia/ui/qt/widgets/separator.h"
 #include "xenia/ui/qt/widgets/slider.h"
 #include "xenia/ui/qt/widgets/tab_selector.h"
-
-#ifdef DEBUG
+#include "xenia/ui/qt/widgets/text_edit.h"
 
 namespace xe {
 namespace ui {
@@ -155,6 +155,7 @@ QWidget* DebugTab::CreateComponentsTab() {
   layout->addWidget(CreateSliderGroup());
   layout->addWidget(CreateCheckboxGroup());
   layout->addWidget(CreateRadioButtonGroup());
+  layout->addWidget(CreateInputGroup());
 
   layout->addStretch();
 
@@ -517,6 +518,56 @@ QWidget* DebugTab::CreateRadioButtonGroup() {
   return group;
 }
 
+QWidget* DebugTab::CreateInputGroup() {
+  QWidget* group = new QWidget();
+
+  QVBoxLayout* group_layout = new QVBoxLayout();
+  group_layout->setContentsMargins(32, 0, 32, 0);
+  group_layout->setSpacing(0);
+  group->setLayout(group_layout);
+
+  XGroupBox* groupbox = new XGroupBox("Input Boxes");
+
+  QVBoxLayout* groupbox_layout = new QVBoxLayout();
+  groupbox_layout->setContentsMargins(16, 16, 16, 16);
+  groupbox->setLayout(groupbox_layout);
+
+  QLabel* lineedit_label = new QLabel("Line Edit");
+  groupbox_layout->addWidget(lineedit_label);
+
+  QHBoxLayout* line_layout = new QHBoxLayout();
+
+  XLineEdit* line_edit = new XLineEdit("Text...");
+  XLineEdit* disabled_line = new XLineEdit("Disabled");
+  disabled_line->setDisabled(true);
+
+  line_layout->addWidget(line_edit);
+  line_layout->addWidget(disabled_line);
+
+  groupbox_layout->addLayout(line_layout);
+
+  QLabel* textedit_label = new QLabel("Text Edit");
+  groupbox_layout->addWidget(textedit_label);
+
+  QHBoxLayout* text_layout = new QHBoxLayout();
+
+  XTextEdit* text_edit = new XTextEdit("Text...");
+  text_edit->setMaximumHeight(80);
+
+  XTextEdit* disabled_edit = new XTextEdit("Disabled");
+  disabled_edit->setDisabled(true);
+  disabled_edit->setMaximumHeight(80);
+
+  text_layout->addWidget(text_edit);
+  text_layout->addWidget(disabled_edit);
+
+  groupbox_layout->addLayout(text_layout);
+
+  group_layout->addWidget(groupbox);
+
+  return group;
+}
+
 QWidget* DebugTab::CreateTab1Widget(XTabSelector* tab_selector,
                                     QStackedLayout* tab_stack_layout) {
   QWidget* widget = new QWidget();
@@ -550,5 +601,3 @@ QWidget* DebugTab::CreateTab3Widget(XTabSelector* tab_selector,
 }  // namespace qt
 }  // namespace ui
 }  // namespace xe
-
-#endif

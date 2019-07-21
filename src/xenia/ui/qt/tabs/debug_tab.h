@@ -1,9 +1,6 @@
 #ifndef XENIA_UI_QT_TABS_DEBUG_H_
 #define XENIA_UI_QT_TABS_DEBUG_H_
 
-// This tab should not be shown in xenia releases
-#ifdef DEBUG
-
 #include <QHBoxLayout>
 #include <QStackedLayout>
 #include <QStackedWidget>
@@ -44,6 +41,7 @@ class DebugTab : public XTab {
   QWidget* CreateSliderGroup();
   QWidget* CreateCheckboxGroup();
   QWidget* CreateRadioButtonGroup();
+  QWidget* CreateInputGroup();
 
   // create widgets for "navigation" tab
   QWidget* CreateTab1Widget(XTabSelector* tab_selector,
@@ -63,7 +61,5 @@ class DebugTab : public XTab {
 }  // namespace qt
 }  // namespace ui
 }  // namespace xe
-
-#endif
 
 #endif
